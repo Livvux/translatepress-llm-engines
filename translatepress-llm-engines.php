@@ -1,11 +1,11 @@
 <?php
 /**
  * Plugin Name: TranslatePress - LLM Translation Engines
- * Plugin URI: https://translatepress.com/
- * Description: Adds OpenAI, Anthropic (Claude), and OpenRouter as automatic translation engines for TranslatePress. Use your own API keys for AI-powered translations.
- * Version: 1.0.0
- * Author: Your Name
- * Author URI: https://yourwebsite.com/
+ * Plugin URI: https://github.com/Livvux/translatepress-llm-engines
+ * Description: Adds OpenAI, Anthropic (Claude), OpenRouter, and DeepSeek as automatic translation engines for TranslatePress. Use your own API keys for AI-powered translations.
+ * Version: 1.1.0
+ * Author: Livvux
+ * Author URI: https://livvux.com/
  * License: GPL2
  * Text Domain: translatepress-llm-engines
  * Domain Path: /languages
@@ -13,7 +13,7 @@
  * Requires PHP: 7.4
  *
  * == Copyright ==
- * Copyright 2024 Your Name
+ * Copyright 2024-2026 Livvux
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -38,7 +38,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 function trp_llm_engines_init() {
     // Define plugin constants
-    define( 'TRP_LLM_ENGINES_VERSION', '1.0.0' );
+    define( 'TRP_LLM_ENGINES_VERSION', '1.1.0' );
     define( 'TRP_LLM_ENGINES_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
     define( 'TRP_LLM_ENGINES_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 

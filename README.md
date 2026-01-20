@@ -1,17 +1,18 @@
 # TranslatePress - LLM Translation Engines
 
-**Version:** 1.0.0  
-**Author:** Livvux (https://livvux.com)  
-**License:** GPL2  
+**Version:** 1.1.0
+**Author:** Livvux (https://livvux.com)
+**License:** GPL2
 **Requires:** WordPress 5.0+, PHP 7.4+
 
 ## About This Plugin
 
-This is an addon for TranslatePress that adds AI-powered translation capabilities using modern Large Language Models (LLMs). It extends TranslatePress with three major AI translation engines:
+This is an addon for TranslatePress that adds AI-powered translation capabilities using modern Large Language Models (LLMs). It extends TranslatePress with four major AI translation engines:
 
 - **OpenAI** (GPT-4, GPT-4o, GPT-3.5 Turbo)
 - **Anthropic** (Claude 3.5 Sonnet, Claude 3 Opus, Claude 3 Haiku)
 - **OpenRouter** (Unified access to 100+ AI models)
+- **DeepSeek** (Best price-performance ratio for translations)
 
 ## What It Does
 
@@ -20,6 +21,7 @@ TranslatePress - LLM Translation Engines enables you to automatically translate 
 1. **OpenAI's GPT models** - Known for excellent understanding of context and nuance
 2. **Anthropic's Claude models** - Highly regarded for natural, human-like translations
 3. **OpenRouter's unified API** - Access to multiple AI providers (OpenAI, Anthropic, Google, Meta, Mistral, DeepSeek, and more) from a single interface
+4. **DeepSeek** - Exceptional translation quality at the lowest cost (~$0.14/1M input tokens)
 
 ## Screenshots
 
@@ -30,13 +32,14 @@ The screenshot shows the Automatic Translation settings page where you can confi
 ## Features
 
 ### Multi-Provider Support
-- Switch between OpenAI, Anthropic, and OpenRouter with a single setting
+- Switch between OpenAI, Anthropic, OpenRouter, and DeepSeek with a single setting
 - Each provider offers multiple model options with different quality/cost tradeoffs
 
 ### Smart Model Selection
 - **OpenAI:** GPT-4o Mini (recommended for cost/quality balance), GPT-4o, GPT-4 Turbo, GPT-3.5 Turbo
 - **Anthropic:** Claude 3.5 Sonnet (recommended), Claude 3.5 Haiku (fast), Claude 3 Opus
 - **OpenRouter:** Access to Claude, GPT, Gemini, Llama, Mistral, DeepSeek, and more
+- **DeepSeek:** DeepSeek Chat (recommended - best value), DeepSeek Reasoner (R1)
 
 ### Intelligent Translation
 - Preserves HTML tags and formatting
@@ -78,13 +81,14 @@ The screenshot shows the Automatic Translation settings page where you can confi
   - [OpenAI API Key](https://platform.openai.com/api-keys)
   - [Anthropic API Key](https://console.anthropic.com/settings/keys)
   - [OpenRouter API Key](https://openrouter.ai/keys)
+  - [DeepSeek API Key](https://platform.deepseek.com/api_keys)
 
 ## Installation
 
 1. Upload the `translatepress-llm-engines` folder to the `/wp-content/plugins/` directory
 2. Activate the plugin through the "Plugins" menu in WordPress
 3. Navigate to TranslatePress → Automatic Translation
-4. Select your preferred engine (OpenAI, Anthropic, or OpenRouter)
+4. Select your preferred engine (OpenAI, Anthropic, OpenRouter, or DeepSeek)
 5. Enter your API key
 6. Choose a model from the dropdown
 7. Save settings and start translating!
@@ -97,11 +101,13 @@ The screenshot shows the Automatic Translation settings page where you can confi
    - **OpenAI (GPT)** - Best all-around option
    - **Anthropic (Claude)** - Excellent for nuanced translations
    - **OpenRouter** - Access to multiple providers with one key
+   - **DeepSeek** - Best price-performance ratio
 
 ### 2. Enter API Key
 - For OpenAI: Get key from https://platform.openai.com/api-keys
 - For Anthropic: Get key from https://console.anthropic.com/settings/keys
 - For OpenRouter: Get key from https://openrouter.ai/keys
+- For DeepSeek: Get key from https://platform.deepseek.com/api_keys
 
 ### 3. Select Model
 Each provider offers different models:
@@ -138,12 +144,16 @@ Translation costs depend on:
 - **Content volume:** More text = more tokens = higher cost
 - **Target languages:** Each target language requires separate translation
 
-Example costs (as of 2024):
-- **GPT-4o Mini:** ~$0.15 per million input tokens, $0.60 per million output tokens
-- **Claude 3.5 Sonnet:** ~$3.00 per million input tokens, $15.00 per million output tokens
-- **Claude 3.5 Haiku:** ~$0.80 per million input tokens, $4.00 per million output tokens
+### Pricing Comparison (as of January 2026):
 
-Most websites will find GPT-4o Mini or Claude 3.5 Haiku to be the most cost-effective choices while maintaining high quality.
+| Provider | Model | Input/1M Tokens | Output/1M Tokens |
+|----------|-------|-----------------|------------------|
+| **DeepSeek** | DeepSeek Chat | **$0.14** | **$0.28** |
+| OpenAI | GPT-4o Mini | $0.15 | $0.60 |
+| Anthropic | Claude 3.5 Haiku | $1.00 | $5.00 |
+| Anthropic | Claude 3.5 Sonnet | $3.00 | $15.00 |
+
+**Recommendation:** DeepSeek Chat offers the best price-performance ratio - excellent translation quality at ~10x lower cost than alternatives.
 
 ## Troubleshooting
 
@@ -193,6 +203,13 @@ For issues or questions:
 
 ## Changelog
 
+### Version 1.1.0 (January 2026)
+- **New:** Added DeepSeek as translation engine
+- DeepSeek Chat model - best price-performance ratio
+- DeepSeek Reasoner (R1) model for complex translations
+- Direct API integration with DeepSeek platform
+- Updated pricing comparison in documentation
+
 ### Version 1.0.0 (2024)
 - Initial release
 - Support for OpenAI (GPT-4, GPT-4o, GPT-3.5)
@@ -216,7 +233,7 @@ You should have received a copy of the GNU General Public License along with thi
 
 - Developed by [Livvux](https://livvux.com)
 - Built as an addon for [TranslatePress](https://translatepress.com/)
-- Powered by [OpenAI](https://openai.com), [Anthropic](https://anthropic.com), and [OpenRouter](https://openrouter.ai)
+- Powered by [OpenAI](https://openai.com), [Anthropic](https://anthropic.com), [OpenRouter](https://openrouter.ai), and [DeepSeek](https://deepseek.com)
 
 ---
 
