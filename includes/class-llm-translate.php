@@ -24,6 +24,7 @@ class TRP_LLM_Translate {
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-openai-machine-translator.php';
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-anthropic-machine-translator.php';
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-openrouter-machine-translator.php';
+        require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-deepseek-machine-translator.php';
     }
 
     public function enqueue_admin_scripts( $hook ) {
@@ -109,6 +110,10 @@ class TRP_LLM_Translate {
             'value' => 'openrouter',
             'label' => __( 'OpenRouter', 'translatepress-llm-engines' )
         );
+        $engines[] = array(
+            'value' => 'deepseek',
+            'label' => __( 'DeepSeek', 'translatepress-llm-engines' )
+        );
 
         return $engines;
     }
@@ -117,6 +122,7 @@ class TRP_LLM_Translate {
         $engines['openai']     = 'TRP_OpenAI_Machine_Translator';
         $engines['anthropic']  = 'TRP_Anthropic_Machine_Translator';
         $engines['openrouter'] = 'TRP_OpenRouter_Machine_Translator';
+        $engines['deepseek']   = 'TRP_DeepSeek_Machine_Translator';
 
         return $engines;
     }
@@ -129,6 +135,7 @@ class TRP_LLM_Translate {
         $this->render_openai_settings( $settings, $translation_engine, $machine_translator );
         $this->render_anthropic_settings( $settings, $translation_engine, $machine_translator );
         $this->render_openrouter_settings( $settings, $translation_engine, $machine_translator );
+        $this->render_deepseek_settings( $settings, $translation_engine, $machine_translator );
     }
 
     private function render_openai_settings( $settings, $translation_engine, $machine_translator ) {
@@ -380,6 +387,86 @@ class TRP_LLM_Translate {
         <?php
     }
 
+    private function render_deepseek_settings( $settings, $translation_engine, $machine_translator ) {
+        $show_errors   = false;
+        $error_message = '';
+
+        if ( 'deepseek' === $translation_engine && method_exists( $machine_translator, 'check_api_key_validity' ) ) {
+            $api_check = $machine_translator->check_api_key_validity();
+            if ( isset( $api_check ) && true === $api_check['error'] ) {
+                $error_message = $api_check['message'];
+                $show_errors   = true;
+            }
+        }
+
+        $text_input_classes = array( 'trp-text-input' );
+        if ( $show_errors && 'deepseek' === $translation_engine ) {
+            $text_input_classes[] = 'trp-text-input-error';
+        }
+        ?>
+        <div class="trp-engine trp-automatic-translation-engine__container" id="deepseek">
+            <div class="trp-llm-settings__container">
+                <span class="trp-primary-text-bold"><?php esc_html_e( 'DeepSeek Model', 'translatepress-llm-engines' ); ?></span>
+                <div class="trp-select-wrapper">
+                    <select id="trp-deepseek-model" class="trp-select" name="trp_machine_translation_settings[deepseek-model]">
+                        <?php
+                        $models = array(
+                            'deepseek-chat'     => 'DeepSeek Chat (Recommended - Best Value)',
+                            'deepseek-reasoner' => 'DeepSeek Reasoner (R1)',
+                        );
+                        $current_model = isset( $settings['deepseek-model'] ) ? $settings['deepseek-model'] : 'deepseek-chat';
+                        if ( ! empty( $current_model ) && ! isset( $models[ $current_model ] ) ) {
+                            $models = array( $current_model => $current_model . ' (saved)' ) + $models;
+                        }
+                        foreach ( $models as $value => $label ) :
+                            ?>
+                            <option value="<?php echo esc_attr( $value ); ?>" <?php selected( $current_model, $value ); ?>>
+                                <?php echo esc_html( $label ); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <span class="trp-description-text">
+                    <?php esc_html_e( 'DeepSeek Chat offers excellent translation quality at the lowest cost. ~$0.14/1M input, ~$0.28/1M output tokens.', 'translatepress-llm-engines' ); ?>
+                </span>
+            </div>
+
+            <div class="trp-llm-settings__container">
+                <span class="trp-primary-text-bold"><?php esc_html_e( 'DeepSeek API Key', 'translatepress-llm-engines' ); ?></span>
+                <div class="trp-automatic-translation-api-key-container">
+                    <input type="password"
+                           id="trp-deepseek-api-key"
+                           class="<?php echo esc_attr( implode( ' ', $text_input_classes ) ); ?>"
+                           name="trp_machine_translation_settings[deepseek-api-key]"
+                           value="<?php echo ! empty( $settings['deepseek-api-key'] ) ? esc_attr( $settings['deepseek-api-key'] ) : ''; ?>"
+                           placeholder="sk-..." />
+                    <?php
+                    if ( method_exists( $machine_translator, 'automatic_translation_svg_output' ) && 'deepseek' === $translation_engine ) {
+                        $machine_translator->automatic_translation_svg_output( $show_errors );
+                    }
+                    ?>
+                </div>
+                <?php if ( $show_errors && 'deepseek' === $translation_engine ) : ?>
+                    <span class="trp-error-inline trp-settings-error-text">
+                        <?php echo wp_kses_post( $error_message ); ?>
+                    </span>
+                <?php endif; ?>
+                <span class="trp-description-text">
+                    <?php
+                    echo wp_kses(
+                        sprintf(
+                            __( 'Get your API key from <a href="%s" target="_blank">DeepSeek Platform</a>.', 'translatepress-llm-engines' ),
+                            'https://platform.deepseek.com/api_keys'
+                        ),
+                        array( 'a' => array( 'href' => array(), 'target' => array() ) )
+                    );
+                    ?>
+                </span>
+            </div>
+        </div>
+        <?php
+    }
+
     public function sanitize_settings( $settings, $mt_settings ) {
         $llm_keys = array(
             'openai-api-key',
@@ -388,6 +475,8 @@ class TRP_LLM_Translate {
             'anthropic-model',
             'openrouter-api-key',
             'openrouter-model',
+            'deepseek-api-key',
+            'deepseek-model',
         );
 
         foreach ( $llm_keys as $key ) {
