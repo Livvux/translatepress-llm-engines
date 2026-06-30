@@ -325,16 +325,17 @@ class TRP_LLM_Translate {
                     <select id="trp-openrouter-model" class="trp-select" name="trp_machine_translation_settings[openrouter-model]">
                         <?php
                         $models = array(
-                            'anthropic/claude-3.5-sonnet'    => 'Claude 3.5 Sonnet (Recommended)',
-                            'openai/gpt-4o-mini'             => 'GPT-4o Mini',
-                            'openai/gpt-4o'                  => 'GPT-4o',
-                            'google/gemini-2.0-flash-exp'    => 'Gemini 2.0 Flash',
-                            'google/gemini-pro-1.5'          => 'Gemini Pro 1.5',
+                            'deepseek/deepseek-v4-flash'        => 'DeepSeek V4 Flash (Recommended)',
+                            'anthropic/claude-3.5-sonnet'       => 'Claude 3.5 Sonnet',
+                            'openai/gpt-4o-mini'                => 'GPT-4o Mini',
+                            'openai/gpt-4o'                     => 'GPT-4o',
+                            'google/gemini-2.0-flash-exp'       => 'Gemini 2.0 Flash',
+                            'google/gemini-pro-1.5'             => 'Gemini Pro 1.5',
                             'meta-llama/llama-3.1-70b-instruct' => 'Llama 3.1 70B',
-                            'mistralai/mistral-large'        => 'Mistral Large',
-                            'deepseek/deepseek-chat'         => 'DeepSeek Chat',
+                            'mistralai/mistral-large'           => 'Mistral Large',
+                            'deepseek/deepseek-chat'            => 'DeepSeek Chat',
                         );
-                        $current_model = isset( $settings['openrouter-model'] ) ? $settings['openrouter-model'] : 'anthropic/claude-3.5-sonnet';
+                        $current_model = isset( $settings['openrouter-model'] ) ? $settings['openrouter-model'] : 'deepseek/deepseek-v4-flash';
                         if ( ! empty( $current_model ) && ! isset( $models[ $current_model ] ) ) {
                             $models = array( $current_model => $current_model . ' (saved)' ) + $models;
                         }

@@ -152,7 +152,8 @@ jQuery(document).on('trpInitFieldToggler', function() {
                     'claude-3-opus-20240229': 'Claude 3 Opus'
                 },
                 openrouter: {
-                    'anthropic/claude-3.5-sonnet': 'Claude 3.5 Sonnet (Recommended)',
+                    'deepseek/deepseek-v4-flash': 'DeepSeek V4 Flash (Recommended)',
+                    'anthropic/claude-3.5-sonnet': 'Claude 3.5 Sonnet',
                     'openai/gpt-4o-mini': 'GPT-4o Mini',
                     'openai/gpt-4o': 'GPT-4o',
                     'google/gemini-2.0-flash-exp': 'Gemini 2.0 Flash',

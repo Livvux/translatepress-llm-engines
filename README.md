@@ -1,6 +1,6 @@
 # TranslatePress - LLM Translation Engines
 
-**Version:** 1.1.0
+**Version:** 1.1.1
 **Author:** Livvux (https://livvux.com)
 **License:** GPL2
 **Requires:** WordPress 5.0+, PHP 7.4+
@@ -11,7 +11,7 @@ This is an addon for TranslatePress that adds AI-powered translation capabilitie
 
 - **OpenAI** (GPT-4, GPT-4o, GPT-3.5 Turbo)
 - **Anthropic** (Claude 3.5 Sonnet, Claude 3 Opus, Claude 3 Haiku)
-- **OpenRouter** (Unified access to 100+ AI models)
+- **OpenRouter** (Unified access to 100+ AI models, including DeepSeek V4 Flash)
 - **DeepSeek** (Best price-performance ratio for translations)
 
 ## What It Does
@@ -38,7 +38,7 @@ The screenshot shows the Automatic Translation settings page where you can confi
 ### Smart Model Selection
 - **OpenAI:** GPT-4o Mini (recommended for cost/quality balance), GPT-4o, GPT-4 Turbo, GPT-3.5 Turbo
 - **Anthropic:** Claude 3.5 Sonnet (recommended), Claude 3.5 Haiku (fast), Claude 3 Opus
-- **OpenRouter:** Access to Claude, GPT, Gemini, Llama, Mistral, DeepSeek, and more
+- **OpenRouter:** Access to DeepSeek V4 Flash, Claude, GPT, Gemini, Llama, Mistral, and more
 - **DeepSeek:** DeepSeek Chat (recommended - best value), DeepSeek Reasoner (R1)
 
 ### Intelligent Translation
@@ -202,6 +202,11 @@ For issues or questions:
 4. Visit [livvux.com](https://livvux.com) for updates and other plugins
 
 ## Changelog
+
+### Version 1.1.1 (June 2026)
+- **New:** Added DeepSeek V4 Flash as the recommended OpenRouter preset
+- Updated the OpenRouter fallback model list used when provider model refresh fails
+- Documented the OpenRouter DeepSeek V4 Flash release path
 
 ### Version 1.1.0 (January 2026)
 - **New:** Added DeepSeek as translation engine
