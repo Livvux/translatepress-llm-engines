@@ -22,9 +22,27 @@ jQuery(document).on('trpInitFieldToggler', function() {
     'use strict';
 
     var TRP_LLM_Models = {
+        // Options as the server rendered them, captured before anything replaces
+        // them. This used to be a hardcoded object duplicating the PHP model
+        // lists, which had drifted from them and could not know about a custom
+        // model the user had saved.
+        serverOptions: {},
+
         init: function() {
+            this.captureServerOptions();
             this.bindEvents();
             this.addRefreshButtons();
+        },
+
+        captureServerOptions: function() {
+            var self = this;
+
+            ['openai', 'anthropic', 'openrouter', 'deepseek'].forEach(function(provider) {
+                var $select = $('#trp-' + provider + '-model');
+                if ($select.length) {
+                    self.serverOptions[provider] = $select.html();
+                }
+            });
         },
 
         bindEvents: function() {
@@ -139,38 +157,17 @@ jQuery(document).on('trpInitFieldToggler', function() {
         },
 
         restoreDefaultModels: function(provider, $select, currentValue) {
-            var defaults = {
-                openai: {
-                    'gpt-4o-mini': 'GPT-4o Mini (Recommended)',
-                    'gpt-4o': 'GPT-4o',
-                    'gpt-4-turbo': 'GPT-4 Turbo',
-                    'gpt-3.5-turbo': 'GPT-3.5 Turbo'
-                },
-                anthropic: {
-                    'claude-3-5-sonnet-20241022': 'Claude 3.5 Sonnet (Recommended)',
-                    'claude-3-5-haiku-20241022': 'Claude 3.5 Haiku (Fast)',
-                    'claude-3-opus-20240229': 'Claude 3 Opus'
-                },
-                openrouter: {
-                    'deepseek/deepseek-v4-flash': 'DeepSeek V4 Flash (Recommended)',
-                    'anthropic/claude-3.5-sonnet': 'Claude 3.5 Sonnet',
-                    'openai/gpt-4o-mini': 'GPT-4o Mini',
-                    'openai/gpt-4o': 'GPT-4o',
-                    'google/gemini-2.0-flash-exp': 'Gemini 2.0 Flash',
-                    'deepseek/deepseek-chat': 'DeepSeek Chat'
-                }
-            };
+            var markup = this.serverOptions[provider];
 
-            var models = defaults[provider] || {};
-            $select.empty();
+            if (!markup) {
+                return;
+            }
 
-            $.each(models, function(modelId, modelName) {
-                var $option = $('<option>').val(modelId).text(modelName);
-                if (modelId === currentValue) {
-                    $option.prop('selected', true);
-                }
-                $select.append($option);
-            });
+            $select.html(markup);
+
+            if (currentValue) {
+                $select.val(currentValue);
+            }
         }
     };
 

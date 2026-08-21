@@ -8,46 +8,71 @@ class TRP_OpenAI_Machine_Translator extends TRP_Machine_Translator {
 
     private $api_url = 'https://api.openai.com/v1/chat/completions';
 
-    public function send_request( $source_language, $target_language, $strings_array ) {
-        $model = $this->get_model();
+    /**
+     * Engine slug, as stored in the translation-engine setting.
+     */
+    const ENGINE = 'openai';
+
+    /**
+     * Model used when the setting was never saved or was saved empty.
+     *
+     * The settings form, the JavaScript fallback list and this class each
+     * used to carry their own copy of this value, and they had drifted:
+     * the form offered one model as selected while an unset option billed
+     * a different and more expensive one. The other two now read this.
+     */
+    const DEFAULT_MODEL = 'gpt-4o-mini';
+
+    public function send_request( $source_language, $target_language, $strings_array, $source_code = '', $target_code = '', $attempt = 0 ) {
+        $model   = $this->get_model();
         $api_key = $this->get_api_key();
 
-        $messages = $this->build_translation_messages( $source_language, $target_language, $strings_array );
+        $strings_json = wp_json_encode( array_values( $strings_array ), JSON_UNESCAPED_UNICODE );
+
+        $context = TRP_LLM_Request_Shape::context(
+            self::ENGINE,
+            $model,
+            $source_language,
+            $target_language,
+            $source_code,
+            $target_code,
+            $strings_array,
+            $attempt
+        );
+
+        $prompts = TRP_LLM_Request_Shape::prompts( $context, $strings_json );
 
         $body = array(
             'model'       => $model,
-            'messages'    => $messages,
+            'messages'    => array(
+                array( 'role' => 'system', 'content' => $prompts['system'] ),
+                array( 'role' => 'user', 'content' => $prompts['user'] ),
+            ),
             'temperature' => 0.1,
+            'max_tokens'  => TRP_LLM_Request_Shape::max_output_tokens( $strings_json, $context ),
         );
 
-        $response = wp_remote_post( $this->api_url, array(
+        $response_format = TRP_LLM_Request_Shape::optional( 'trp_llm_response_format', $context );
+
+        if ( array() !== $response_format ) {
+            $body['response_format'] = $response_format;
+        }
+
+        $body = apply_filters( 'trp_llm_request_body', $body, $context );
+
+        // No trp_llm_request_args filter here. WordPress fires http_request_args
+        // on this array inside wp_remote_post() a moment later, with the URL, so
+        // a second extension point for the same array would only give a site two
+        // places to do one thing.
+        return wp_remote_post( $this->api_url, array(
             'method'  => 'POST',
-            'timeout' => 60,
+            'timeout' => TRP_LLM_Request_Retry::request_timeout(),
             'headers' => array(
                 'Content-Type'  => 'application/json',
                 'Authorization' => 'Bearer ' . $api_key,
             ),
             'body'    => wp_json_encode( $body ),
         ) );
-
-        return $response;
-    }
-
-    private function build_translation_messages( $source_language, $target_language, $strings_array ) {
-        $strings_json = wp_json_encode( array_values( $strings_array ), JSON_UNESCAPED_UNICODE );
-
-        $system_prompt = "You are a professional translator. Translate the given texts from {$source_language} to {$target_language}. " .
-                         "Maintain the original meaning, tone, and formatting. " .
-                         "Preserve any HTML tags, placeholders like %s, %d, or {{variables}}. " .
-                         "Return ONLY a JSON array with the translated strings in the same order as the input. " .
-                         "Do not include any explanations or additional text.";
-
-        $user_prompt = "Translate these texts to {$target_language}:\n{$strings_json}";
-
-        return array(
-            array( 'role' => 'system', 'content' => $system_prompt ),
-            array( 'role' => 'user', 'content' => $user_prompt ),
-        );
     }
 
     public function translate_array( $new_strings, $target_language_code, $source_language_code = null ) {
@@ -59,111 +84,106 @@ class TRP_OpenAI_Machine_Translator extends TRP_Machine_Translator {
             return array();
         }
 
+        $partitioned = TRP_LLM_Translation_Skiplist::partition( $new_strings );
+        $new_strings = $partitioned['send'];
+
+        // A skipped string is returned as itself, which is the vendor's own
+        // pattern for its skips. Dropping the key instead would leave the row at
+        // status 0, so the render layer would re-harvest and re-offer it on every
+        // future render with no terminating condition.
+        $translated_strings = $partitioned['skip'];
+
+        if ( empty( $new_strings ) ) {
+            return $translated_strings;
+        }
+
         $source_language = $this->get_language_name( $source_language_code );
         $target_language = $this->get_language_name( $target_language_code );
 
-        $translated_strings = array();
-        $chunk_size = apply_filters( 'trp_openai_chunk_size', 25 );
-        $new_strings_chunks = array_chunk( $new_strings, $chunk_size, true );
+        // A cooldown is the terminating condition this loop never had. Without it
+        // an expired key, a spent balance or an invalid model produces one doomed
+        // call per chunk per render, on every page carrying an untranslated
+        // string, indefinitely.
+        if ( '' !== TRP_LLM_Engine_Cooldown::active( self::ENGINE ) ) {
+            if ( TRP_LLM_Engine_Cooldown::note_skip( self::ENGINE ) ) {
+                TRP_LLM_Response_Normalizer::log_chunk_failure(
+                    self::ENGINE,
+                    'cooldown',
+                    count( $new_strings ),
+                    0,
+                    ''
+                );
+            }
 
-        foreach ( $new_strings_chunks as $new_strings_chunk ) {
-            $response = $this->send_request( $source_language, $target_language, $new_strings_chunk );
+            return $translated_strings;
+        }
 
-            $this->machine_translator_logger->log( array(
-                'strings'     => serialize( $new_strings_chunk ),
-                'response'    => serialize( $response ),
-                'lang_source' => $source_language,
-                'lang_target' => $target_language,
-            ) );
+        $mt_settings = isset( $this->settings['trp_machine_translation_settings'] )
+            ? $this->settings['trp_machine_translation_settings']
+            : array();
 
-            if ( is_array( $response ) && ! is_wp_error( $response ) &&
-                 isset( $response['response']['code'] ) && $response['response']['code'] === 200 ) {
+        $chunks = array_chunk( $new_strings, TRP_LLM_Request_Shape::chunk_size( self::ENGINE ), true );
 
-                $body = json_decode( $response['body'], true );
+        foreach ( $chunks as $chunk ) {
+            $context = TRP_LLM_Request_Shape::context(
+                self::ENGINE,
+                $this->get_model(),
+                $source_language,
+                $target_language,
+                $source_language_code,
+                $target_language_code,
+                $chunk
+            );
 
-                if ( isset( $body['choices'][0]['message']['content'] ) ) {
-                    $content = $body['choices'][0]['message']['content'];
-                    $translations = $this->parse_translation_response( $content );
-
-                    if ( ! empty( $translations ) && count( $translations ) === count( $new_strings_chunk ) ) {
-                        $this->machine_translator_logger->count_towards_quota( $new_strings_chunk );
-
-                        $i = 0;
-                        foreach ( $new_strings_chunk as $key => $old_string ) {
-                            $translated_strings[ $key ] = isset( $translations[ $i ] ) ? $translations[ $i ] : $old_string;
-                            $i++;
-                        }
-                    }
+            $translated = TRP_LLM_Chunk_Runner::run(
+                $chunk,
+                $context,
+                $this->machine_translator_logger,
+                $mt_settings,
+                function ( $part, $attempt ) use ( $source_language, $target_language, $source_language_code, $target_language_code ) {
+                    return $this->send_request(
+                        $source_language,
+                        $target_language,
+                        $part,
+                        $source_language_code,
+                        $target_language_code,
+                        $attempt
+                    );
                 }
+            );
 
-                if ( $this->machine_translator_logger->quota_exceeded() ) {
-                    break;
-                }
+            $translated_strings += $translated;
+
+            // Only a chunk that produced nothing can have started a cooldown, so
+            // the happy path never pays for this read.
+            if ( array() === $translated && '' !== TRP_LLM_Engine_Cooldown::active( self::ENGINE ) ) {
+                break;
+            }
+
+            if ( $this->machine_translator_logger->quota_exceeded() ) {
+                break;
             }
         }
 
         return $translated_strings;
     }
 
-    private function parse_translation_response( $content ) {
-        $content = trim( $content );
-
-        if ( strpos( $content, '```json' ) !== false ) {
-            $content = preg_replace( '/```json\s*/', '', $content );
-            $content = preg_replace( '/```\s*$/', '', $content );
-        } elseif ( strpos( $content, '```' ) !== false ) {
-            $content = preg_replace( '/```\s*/', '', $content );
-        }
-
-        $translations = json_decode( trim( $content ), true );
-
-        if ( json_last_error() === JSON_ERROR_NONE && is_array( $translations ) ) {
-            return $translations;
-        }
-
-        return array();
+    /**
+     * Strings this engine sends in one request.
+     *
+     * The vendor chunks by this before saving each chunk to the database, so a
+     * value smaller than what this class really sends means several paid calls
+     * happen before the first save, and an aborted page load re-sends and
+     * re-bills all of them.
+     *
+     * @return int
+     */
+    public function get_chunk_size() {
+        return TRP_LLM_Request_Shape::chunk_size( self::ENGINE );
     }
 
     private function get_language_name( $language_code ) {
-        $language_names = array(
-            'en_US' => 'English',
-            'en_GB' => 'English (UK)',
-            'de_DE' => 'German',
-            'fr_FR' => 'French',
-            'es_ES' => 'Spanish',
-            'it_IT' => 'Italian',
-            'pt_PT' => 'Portuguese',
-            'pt_BR' => 'Portuguese (Brazil)',
-            'nl_NL' => 'Dutch',
-            'ru_RU' => 'Russian',
-            'zh_CN' => 'Chinese (Simplified)',
-            'zh_TW' => 'Chinese (Traditional)',
-            'ja'    => 'Japanese',
-            'ko_KR' => 'Korean',
-            'ar'    => 'Arabic',
-            'tr_TR' => 'Turkish',
-            'pl_PL' => 'Polish',
-            'sv_SE' => 'Swedish',
-            'da_DK' => 'Danish',
-            'fi'    => 'Finnish',
-            'no_NO' => 'Norwegian',
-            'cs_CZ' => 'Czech',
-            'el'    => 'Greek',
-            'hu_HU' => 'Hungarian',
-            'ro_RO' => 'Romanian',
-            'uk'    => 'Ukrainian',
-            'he_IL' => 'Hebrew',
-            'th'    => 'Thai',
-            'vi'    => 'Vietnamese',
-            'id_ID' => 'Indonesian',
-        );
-
-        if ( isset( $language_names[ $language_code ] ) ) {
-            return $language_names[ $language_code ];
-        }
-
-        $iso_code = explode( '_', $language_code )[0];
-        return ucfirst( $iso_code );
+        return TRP_LLM_Request_Shape::language_name( $language_code );
     }
 
     public function test_request() {
@@ -176,16 +196,39 @@ class TRP_OpenAI_Machine_Translator extends TRP_Machine_Translator {
             : false;
     }
 
-    public static function get_available_models( $api_key ) {
+    /**
+     * Cache key for one account's model list.
+     *
+     * Keyed by the API key, because which catalogue an account can reach
+     * depends on the account. Unchanged in shape, extracted so a contract can assert it
+     * without an HTTP call.
+     *
+     * @param string $api_key API key the list will be fetched with.
+     *
+     * @return string
+     */
+    public static function models_transient_key( $api_key ) {
+        return 'trp_openai_models_' . md5( (string) $api_key );
+    }
+
+    public static function get_available_models( $api_key, $force_refresh = false ) {
         if ( empty( $api_key ) ) {
             return array( 'error' => __( 'API key is required.', 'translatepress-llm-engines' ) );
         }
 
-        $transient_key = 'trp_openai_models_' . md5( $api_key );
-        $cached_models = get_transient( $transient_key );
+        $transient_key = self::models_transient_key( $api_key );
 
-        if ( false !== $cached_models ) {
-            return $cached_models;
+        // The settings screen ships a Refresh Models button whose request
+        // always carried this flag. Nothing read it, so the button could not
+        // do anything for the 24 hours the cache lives.
+        if ( $force_refresh ) {
+            delete_transient( $transient_key );
+        } else {
+            $cached_models = get_transient( $transient_key );
+
+            if ( false !== $cached_models ) {
+                return $cached_models;
+            }
         }
 
         $response = wp_remote_get( 'https://api.openai.com/v1/models', array(
@@ -289,24 +332,38 @@ class TRP_OpenAI_Machine_Translator extends TRP_Machine_Translator {
     }
 
     private function get_model() {
-        return isset( $this->settings['trp_machine_translation_settings']['openai-model'] )
-            ? $this->settings['trp_machine_translation_settings']['openai-model']
-            : 'gpt-4o-mini';
+        $model = isset( $this->settings['trp_machine_translation_settings']['openai-model'] )
+            ? trim( (string) $this->settings['trp_machine_translation_settings']['openai-model'] )
+            : '';
+
+        // isset() alone let a saved but empty value through as an empty
+        // model name, which the provider answers with a 400 that left no
+        // trace anywhere before TRP_LLM_Http_Failure_Log existed.
+        return '' !== $model ? $model : static::DEFAULT_MODEL;
     }
 
     public function get_supported_languages() {
-        return array(
-            'en', 'de', 'fr', 'es', 'it', 'pt', 'nl', 'ru', 'zh', 'ja', 'ko',
-            'ar', 'tr', 'pl', 'sv', 'da', 'fi', 'no', 'cs', 'el', 'hu', 'ro',
-            'uk', 'he', 'th', 'vi', 'id', 'ms', 'hi', 'bn', 'ta', 'te', 'mr',
-            'gu', 'kn', 'ml', 'pa', 'ur', 'fa', 'af', 'sq', 'am', 'hy', 'az',
-            'eu', 'be', 'bg', 'ca', 'hr', 'et', 'tl', 'gl', 'ka', 'is', 'lv',
-            'lt', 'mk', 'mt', 'mn', 'ne', 'sr', 'sk', 'sl', 'sw', 'cy', 'yi',
-        );
+        return TRP_LLM_Request_Shape::SUPPORTED_LANGUAGES;
     }
 
     public function get_engine_specific_language_codes( $languages ) {
         return $this->trp_languages->get_iso_codes( $languages );
+    }
+
+    /**
+     * Ask the provider whether this key is usable, without buying anything.
+     *
+     * @param string $api_key Key to check.
+     *
+     * @return array|WP_Error
+     */
+    private function validate_key_request( $api_key ) {
+        return wp_remote_get( 'https://api.openai.com/v1/models', array(
+            'timeout' => 15,
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $api_key,
+            ),
+        ) );
     }
 
     public function check_api_key_validity() {
@@ -315,7 +372,7 @@ class TRP_OpenAI_Machine_Translator extends TRP_Machine_Translator {
         $is_error = false;
         $return_message = '';
 
-        if ( 'openai' === $translation_engine && 'yes' === $this->settings['trp_machine_translation_settings']['machine-translation'] ) {
+        if ( self::ENGINE === $translation_engine && 'yes' === $this->settings['trp_machine_translation_settings']['machine-translation'] ) {
             if ( isset( $this->correct_api_key ) && $this->correct_api_key !== null ) {
                 return $this->correct_api_key;
             }
@@ -324,13 +381,21 @@ class TRP_OpenAI_Machine_Translator extends TRP_Machine_Translator {
                 $is_error = true;
                 $return_message = __( 'Please enter your OpenAI API key.', 'translatepress-llm-engines' );
             } else {
-                $response = $this->test_request();
-                $code = wp_remote_retrieve_response_code( $response );
+                // Free probe plus a short lived verdict. This used to call
+                // test_request(), a real translation, once per engine panel on
+                // every render of the settings screen.
+                $verdict = TRP_LLM_Key_Verdict::remember( self::ENGINE, $api_key, function () use ( $api_key ) {
+                    $response = $this->validate_key_request( $api_key );
+                    $code     = (int) wp_remote_retrieve_response_code( $response );
 
-                if ( 200 !== $code ) {
-                    $is_error = true;
-                    $return_message = $this->get_error_message( $code, $response );
-                }
+                    return array(
+                        'error'   => 200 !== $code,
+                        'message' => 200 !== $code ? $this->get_error_message( $code, $response ) : '',
+                    );
+                } );
+
+                $is_error       = $verdict['error'];
+                $return_message = $verdict['message'];
             }
 
             $this->correct_api_key = array(
