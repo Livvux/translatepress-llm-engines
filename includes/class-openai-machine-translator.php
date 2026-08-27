@@ -163,6 +163,13 @@ class TRP_OpenAI_Machine_Translator extends TRP_Machine_Translator {
             if ( $this->machine_translator_logger->quota_exceeded() ) {
                 break;
             }
+
+            // Budget is a property of the render, not of the chunk. Once it is
+            // spent every remaining chunk would evaluate the same false predicate
+            // and log the same refusal, so the loop ends here instead.
+            if ( ! TRP_LLM_Request_Retry::send_is_worthwhile() ) {
+                break;
+            }
         }
 
         return $translated_strings;
@@ -257,7 +264,14 @@ class TRP_OpenAI_Machine_Translator extends TRP_Machine_Translator {
 
         $pricing = self::get_openai_pricing();
         $chat_models = array();
-        $preferred_models = array( 'gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo', 'o1-mini', 'o1-preview' );
+        // gpt-4-turbo and gpt-3.5-turbo shut down on 2026-10-23, o1-mini did on
+        // 2025-10-27 and o1-preview on 2025-07-28. Verified 2026-08-27.
+        //
+        // The 5.6 tier is deliberately absent until the model catalog lands.
+        // Those models reject temperature and reject max_tokens, and send_request()
+        // sends both, so offering one here would guarantee a 400 and a five minute
+        // cooldown for whoever picked it.
+        $preferred_models = array( 'gpt-4o-mini', 'gpt-4o', 'gpt-4' );
 
         foreach ( $body['data'] as $model ) {
             $model_id = $model['id'];
@@ -313,12 +327,10 @@ class TRP_OpenAI_Machine_Translator extends TRP_Machine_Translator {
         return array(
             'gpt-4o-mini'    => array( 'input' => 0.15, 'output' => 0.60 ),
             'gpt-4o'         => array( 'input' => 2.50, 'output' => 10.00 ),
-            'gpt-4-turbo'    => array( 'input' => 10.00, 'output' => 30.00 ),
             'gpt-4'          => array( 'input' => 30.00, 'output' => 60.00 ),
-            'gpt-3.5-turbo'  => array( 'input' => 0.50, 'output' => 1.50 ),
-            'o1-mini'        => array( 'input' => 3.00, 'output' => 12.00 ),
-            'o1-preview'     => array( 'input' => 15.00, 'output' => 60.00 ),
-            'o1'             => array( 'input' => 15.00, 'output' => 60.00 ),
+            'gpt-5.6-luna'   => array( 'input' => 0.20, 'output' => 1.20 ),
+            'gpt-5.6-terra'  => array( 'input' => 1.00, 'output' => 6.00 ),
+            'gpt-5.6-sol'    => array( 'input' => 2.50, 'output' => 15.00 ),
         );
     }
 

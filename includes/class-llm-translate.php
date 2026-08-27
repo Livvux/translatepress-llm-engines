@@ -100,6 +100,13 @@ class TRP_LLM_Translate {
                 $models = TRP_OpenRouter_Machine_Translator::get_available_models( $api_key, $force_refresh );
                 break;
 
+            case 'deepseek':
+                if ( empty( $api_key ) ) {
+                    wp_send_json_error( array( 'message' => __( 'API key is required for DeepSeek.', 'translatepress-llm-engines' ) ) );
+                }
+                $models = TRP_DeepSeek_Machine_Translator::get_available_models( $api_key, $force_refresh );
+                break;
+
             default:
                 wp_send_json_error( array( 'message' => __( 'Invalid provider.', 'translatepress-llm-engines' ) ) );
         }
@@ -132,11 +139,24 @@ class TRP_LLM_Translate {
         return $engines;
     }
 
+    /**
+     * Engine slug to the class that answers for it.
+     *
+     * A constant rather than four literals inside register_engine_classes(),
+     * because this map is needed in more than one place now and a second copy of
+     * it is a second thing to forget.
+     */
+    const ENGINE_CLASSES = array(
+        'openai'     => 'TRP_OpenAI_Machine_Translator',
+        'anthropic'  => 'TRP_Anthropic_Machine_Translator',
+        'openrouter' => 'TRP_OpenRouter_Machine_Translator',
+        'deepseek'   => 'TRP_DeepSeek_Machine_Translator',
+    );
+
     public function register_engine_classes( $engines ) {
-        $engines['openai']     = 'TRP_OpenAI_Machine_Translator';
-        $engines['anthropic']  = 'TRP_Anthropic_Machine_Translator';
-        $engines['openrouter'] = 'TRP_OpenRouter_Machine_Translator';
-        $engines['deepseek']   = 'TRP_DeepSeek_Machine_Translator';
+        foreach ( self::ENGINE_CLASSES as $slug => $class ) {
+            $engines[ $slug ] = $class;
+        }
 
         return $engines;
     }
@@ -185,10 +205,12 @@ class TRP_LLM_Translate {
                     <select id="trp-openai-model" class="trp-select" name="trp_machine_translation_settings[openai-model]">
                         <?php
                         $models = array(
-                            'gpt-4o-mini'  => 'GPT-4o Mini (Recommended)',
-                            'gpt-4o'       => 'GPT-4o',
-                            'gpt-4-turbo'  => 'GPT-4 Turbo',
-                            'gpt-3.5-turbo' => 'GPT-3.5 Turbo',
+                            // Only models confirmed absent from OpenAI's deprecation
+                            // tables on 2026-08-27. Anything else belongs in the
+                            // live list the Refresh Models button fetches, not in a
+                            // literal that goes stale without telling anyone.
+                            'gpt-4o-mini' => 'GPT-4o Mini (Recommended)',
+                            'gpt-4o'      => 'GPT-4o',
                         );
                         $current_model = ! empty( $settings['openai-model'] )
                             ? $settings['openai-model']
@@ -269,9 +291,10 @@ class TRP_LLM_Translate {
                     <select id="trp-anthropic-model" class="trp-select" name="trp_machine_translation_settings[anthropic-model]">
                         <?php
                         $models = array(
-                            'claude-3-5-sonnet-20241022' => 'Claude 3.5 Sonnet (Recommended)',
-                            'claude-3-5-haiku-20241022'  => 'Claude 3.5 Haiku (Fast)',
-                            'claude-3-opus-20240229'     => 'Claude 3 Opus',
+                            'claude-haiku-4-5'  => 'Claude Haiku 4.5 (Recommended - Best Value)',
+                            'claude-sonnet-5'   => 'Claude Sonnet 5',
+                            'claude-sonnet-4-6' => 'Claude Sonnet 4.6',
+                            'claude-opus-5'     => 'Claude Opus 5',
                         );
                         $current_model = ! empty( $settings['anthropic-model'] )
                             ? $settings['anthropic-model']
@@ -353,14 +376,12 @@ class TRP_LLM_Translate {
                         <?php
                         $models = array(
                             'deepseek/deepseek-v4-flash'        => 'DeepSeek V4 Flash (Recommended)',
-                            'anthropic/claude-3.5-sonnet'       => 'Claude 3.5 Sonnet',
+                            'deepseek/deepseek-v4-pro'          => 'DeepSeek V4 Pro',
+                            'google/gemini-2.5-flash-lite'      => 'Gemini 2.5 Flash Lite',
+                            'anthropic/claude-haiku-4.5'        => 'Claude Haiku 4.5',
                             'openai/gpt-4o-mini'                => 'GPT-4o Mini',
-                            'openai/gpt-4o'                     => 'GPT-4o',
-                            'google/gemini-2.0-flash-exp'       => 'Gemini 2.0 Flash',
-                            'google/gemini-pro-1.5'             => 'Gemini Pro 1.5',
                             'meta-llama/llama-3.1-70b-instruct' => 'Llama 3.1 70B',
                             'mistralai/mistral-large'           => 'Mistral Large',
-                            'deepseek/deepseek-chat'            => 'DeepSeek Chat',
                         );
                         $current_model = ! empty( $settings['openrouter-model'] )
                             ? $settings['openrouter-model']
@@ -441,8 +462,8 @@ class TRP_LLM_Translate {
                     <select id="trp-deepseek-model" class="trp-select" name="trp_machine_translation_settings[deepseek-model]">
                         <?php
                         $models = array(
-                            'deepseek-chat'     => 'DeepSeek Chat (Recommended - Best Value)',
-                            'deepseek-reasoner' => 'DeepSeek Reasoner (R1)',
+                            'deepseek-v4-flash' => 'DeepSeek V4 Flash (Recommended - Best Value)',
+                            'deepseek-v4-pro'   => 'DeepSeek V4 Pro',
                         );
                         $current_model = ! empty( $settings['deepseek-model'] )
                             ? $settings['deepseek-model']
@@ -459,7 +480,7 @@ class TRP_LLM_Translate {
                     </select>
                 </div>
                 <span class="trp-description-text">
-                    <?php esc_html_e( 'DeepSeek Chat offers excellent translation quality at the lowest cost. ~$0.14/1M input, ~$0.28/1M output tokens.', 'translatepress-llm-engines' ); ?>
+                    <?php esc_html_e( 'DeepSeek V4 Flash offers excellent translation quality at the lowest cost. ~$0.07/1M input, ~$0.17/1M output tokens.', 'translatepress-llm-engines' ); ?>
                 </span>
             </div>
 
@@ -555,7 +576,7 @@ class TRP_LLM_Translate {
         // A cooldown outlives the problem that started it. Someone who has just
         // pasted a new key has fixed the thing the cooldown is waiting out, and
         // should not have to wait a quarter of an hour to find out.
-        foreach ( array( 'openai', 'anthropic', 'openrouter', 'deepseek' ) as $engine ) {
+        foreach ( self::ENGINE_CLASSES as $engine => $class ) {
             $key = $engine . '-api-key';
 
             $before = isset( $existing[ $key ] ) ? $existing[ $key ] : '';
@@ -564,6 +585,13 @@ class TRP_LLM_Translate {
             if ( $before !== $after ) {
                 TRP_LLM_Engine_Cooldown::clear( $engine );
                 delete_transient( TRP_LLM_Key_Verdict::key( $engine, $before ) );
+
+                // The model list is cached for a day and keyed by the old key, so
+                // without this a new key kept serving the previous account's
+                // catalogue for up to twenty four hours. Keying the transient by
+                // the key was supposed to prevent exactly that and only worked in
+                // one direction, because nothing ever removed the old entry.
+                delete_transient( $class::models_transient_key( $before ) );
             }
         }
     }

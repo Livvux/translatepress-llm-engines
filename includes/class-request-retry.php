@@ -44,6 +44,30 @@ class TRP_LLM_Request_Retry {
     const RETRYABLE_ERRORS = array( 'http_request_failed', 'connect_error', 'timeout' );
 
     /**
+     * Seconds the answer still needs after the socket closes.
+     *
+     * Parsing, the placeholder guard and the dictionary write are not free, and a
+     * timeout that consumes the last second of the budget leaves nothing to store
+     * what it just paid for.
+     */
+    const BUDGET_HEADROOM = 1;
+
+    /**
+     * Below this many seconds a request is not worth issuing.
+     *
+     * Deliberately not the old floor of five reinterpreted. The old five was a
+     * minimum timeout, so a spent budget still sent something. This is a minimum
+     * amount of budget, so a spent budget sends nothing.
+     *
+     * TranslatePress grants ten seconds per render in class-translation-render.php
+     * and class-gettext-manager.php, both through the trp_machine_translation_time_budget
+     * filter. Five out of those ten is a compromise: raising it refuses more doomed
+     * requests and translates less per render, and the real fix for a site that
+     * needs both is to raise the budget itself or to translate off the render path.
+     */
+    const MIN_USEFUL_SECONDS = 5;
+
+    /**
      * Decide whether a response is worth sending again.
      *
      * @param mixed $response Return value of wp_remote_post().
@@ -133,7 +157,7 @@ class TRP_LLM_Request_Retry {
             // it. A retry that clears the sleep check and then blocks for its own
             // timeout holds a prefork worker long past a budget declared in
             // seconds, which is the collapse mode this guard exists to prevent.
-            if ( ! self::fits_in_budget( $delay + self::request_timeout() ) ) {
+            if ( ! self::send_is_worthwhile( $delay ) ) {
                 return $response;
             }
 
@@ -162,6 +186,22 @@ class TRP_LLM_Request_Retry {
     /**
      * How long one request may block, never longer than the budget allows.
      *
+     * The old floor here was max( 5, ... ), and it was the whole content of
+     * trp_llm_http_failures. Measured on production on 2026-08-27, every entry in
+     * that log was a cURL 28, and the 5000, 5001 and 5002 millisecond ones were
+     * the floor doing its work: the deadline had already passed, remaining_budget()
+     * was negative, and the floor rounded that back up into a request that was
+     * issued anyway with five seconds to live. The provider generates and bills the
+     * completion whether or not we are still listening, so those were paid for and
+     * discarded.
+     *
+     * The floor is gone. What replaces it is send_is_worthwhile(), because refusing
+     * to send is a decision for the caller, not something a timeout can express.
+     * The value returned here stays at or above one second so that it is always
+     * safe to hand to a transport: CURLOPT_TIMEOUT of zero means no timeout at all,
+     * and turning a spent budget into an unbounded request would be worse than the
+     * bug being fixed.
+     *
      * @return int
      */
     public static function request_timeout() {
@@ -172,7 +212,41 @@ class TRP_LLM_Request_Retry {
             return $ceiling;
         }
 
-        return (int) max( 5, min( $ceiling, $left ) );
+        return (int) min( $ceiling, max( 1, floor( $left - self::BUDGET_HEADROOM ) ) );
+    }
+
+    /**
+     * Whether a request is worth issuing at all right now.
+     *
+     * Answers the question request_timeout() cannot: a two second timeout is a
+     * valid number and a doomed request. The 7000, 8001 and 9000 millisecond
+     * timeouts in the same production log were requests that had most of the budget
+     * and still did not finish, so a request with a couple of seconds left is not a
+     * gamble worth the money.
+     *
+     * INF short circuits before anything else. No deadline means no render is
+     * waiting, which is the case for WP-CLI, cron and the backfill scripts, and
+     * those must keep the full ceiling and must never be refused.
+     *
+     * @param float $extra_seconds Seconds that will be spent before the request,
+     *                             such as a retry backoff.
+     *
+     * @return bool
+     */
+    public static function send_is_worthwhile( $extra_seconds = 0 ) {
+        $left = self::remaining_budget();
+
+        if ( INF === $left ) {
+            return true;
+        }
+
+        $minimum = max( 1, (int) apply_filters( 'trp_llm_min_request_seconds', self::MIN_USEFUL_SECONDS ) );
+
+        if ( $left - self::BUDGET_HEADROOM < $minimum ) {
+            return false;
+        }
+
+        return self::fits_in_budget( $extra_seconds + self::request_timeout() );
     }
 
     /**

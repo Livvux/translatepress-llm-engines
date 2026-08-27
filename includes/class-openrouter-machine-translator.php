@@ -188,6 +188,13 @@ class TRP_OpenRouter_Machine_Translator extends TRP_Machine_Translator {
             if ( $this->machine_translator_logger->quota_exceeded() ) {
                 break;
             }
+
+            // Budget is a property of the render, not of the chunk. Once it is
+            // spent every remaining chunk would evaluate the same false predicate
+            // and log the same refusal, so the loop ends here instead.
+            if ( ! TRP_LLM_Request_Retry::send_is_worthwhile() ) {
+                break;
+            }
         }
 
         return $translated_strings;
@@ -321,7 +328,10 @@ class TRP_OpenRouter_Machine_Translator extends TRP_Machine_Translator {
                 return $a_provider_idx - $b_provider_idx;
             }
 
-            return $a['prompt_price'] - $b['prompt_price'];
+            // Spaceship, not subtraction. usort casts the return to int, and
+            // OpenRouter quotes prices per token, so every real difference was
+            // in the 1e-7 range and truncated to zero. This sort has never run.
+            return $a['prompt_price'] <=> $b['prompt_price'];
         } );
 
         $result = array();

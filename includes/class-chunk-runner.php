@@ -83,6 +83,26 @@ class TRP_LLM_Chunk_Runner {
         $engine  = $context['engine'];
         $attempt = self::RUNG_DERIVED === $rung ? 0 : 1;
 
+        // The budget was checked before retries and before escalations and never
+        // before the first send, which is the one that always happens. Every cURL
+        // 28 in trp_llm_http_failures entered here with a budget that could not
+        // hold a request and left with a paid, abandoned completion.
+        //
+        // Leaving the chunk untranslated is not a quiet failure. The strings stay
+        // at status 0, so a later render tries again, and a later render is not
+        // competing for this visitor's budget.
+        if ( ! TRP_LLM_Request_Retry::send_is_worthwhile() ) {
+            // One row per render, not one per chunk. A page with twenty pending
+            // chunks would otherwise fill a fifty slot ring buffer with the same
+            // line and push out every other cause, which is the pathology
+            // TRP_LLM_Http_Failure_Log was split off to avoid.
+            if ( TRP_LLM_Engine_Cooldown::note_skip( $engine . ':budget' ) ) {
+                TRP_LLM_Response_Normalizer::log_chunk_failure( $engine, 'budget-spent', count( $chunk ), 0, '' );
+            }
+
+            return array();
+        }
+
         // The caller built this context before the first send, so its attempt was
         // 0 and stayed 0 while the ladder was climbed. Anything reading it, a log
         // line here or a site filter downstream, would have been told every
@@ -131,6 +151,20 @@ class TRP_LLM_Chunk_Runner {
 
         $translations = TRP_LLM_Response_Normalizer::parse( $content );
 
+        // A model that answered the whole chunk twice has given a usable answer and
+        // an echo of it. Production logged this as count-mismatch and threw both
+        // away, expected 1 received 2 and expected 1 received 4, with the last copy
+        // regularly cut mid word. trim_repetition() refuses anything it cannot
+        // prove is an echo, so the alternative reading, one source split across
+        // several elements, still falls through to the mismatch branch below.
+        if ( count( $translations ) > count( $chunk ) ) {
+            $trimmed = TRP_LLM_Response_Normalizer::trim_repetition( $translations, count( $chunk ) );
+
+            if ( null !== $trimmed ) {
+                $translations = $trimmed;
+            }
+        }
+
         if ( count( $translations ) === count( $chunk ) ) {
             return TRP_LLM_Placeholder_Guard::filter_chunk( $chunk, $translations, $engine );
         }
@@ -171,19 +205,6 @@ class TRP_LLM_Chunk_Runner {
     );
 
     /**
-     * Whether one more send still fits inside this visitor's render budget.
-     *
-     * The sleep is not the expensive part. The request that follows it carries
-     * its own timeout, and that is what holds a prefork worker open long after
-     * the deadline has passed.
-     *
-     * @return bool
-     */
-    private static function another_send_fits() {
-        return TRP_LLM_Request_Retry::fits_in_budget( TRP_LLM_Request_Retry::request_timeout() );
-    }
-
-    /**
      * Respond to an answer that ran out of room.
      *
      * @param array    $chunk        Strings for this attempt.
@@ -206,13 +227,9 @@ class TRP_LLM_Chunk_Runner {
             $content
         );
 
-        // Leaving it here is not a quiet failure. The strings stay at status 0,
-        // so a later render tries again, and a later render is not competing for
-        // this visitor's budget.
-        if ( ! self::another_send_fits() ) {
-            return array();
-        }
-
+        // No budget check here. attempt() asks the same question at its own
+        // entrance and answers it the same way, and it also writes the
+        // budget-spent breadcrumb that a guard at this level would swallow.
         if ( self::RUNG_DERIVED === $rung ) {
             return self::attempt( $chunk, $context, $logger, $mt_settings, $sender, self::RUNG_MAX );
         }
@@ -225,10 +242,6 @@ class TRP_LLM_Chunk_Runner {
         $recovered = array();
 
         foreach ( $halves as $half ) {
-            if ( ! self::another_send_fits() ) {
-                break;
-            }
-
             $recovered += self::attempt( $half, $context, $logger, $mt_settings, $sender, self::RUNG_HALVED );
         }
 

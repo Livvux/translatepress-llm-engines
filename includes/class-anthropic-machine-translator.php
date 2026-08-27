@@ -21,7 +21,7 @@ class TRP_Anthropic_Machine_Translator extends TRP_Machine_Translator {
      * the form offered one model as selected while an unset option billed
      * a different and more expensive one. The other two now read this.
      */
-    const DEFAULT_MODEL = 'claude-3-5-sonnet-20241022';
+    const DEFAULT_MODEL = 'claude-haiku-4-5';
 
     public function send_request( $source_language, $target_language, $strings_array, $source_code = '', $target_code = '', $attempt = 0 ) {
         $model   = $this->get_model();
@@ -157,6 +157,13 @@ class TRP_Anthropic_Machine_Translator extends TRP_Machine_Translator {
             if ( $this->machine_translator_logger->quota_exceeded() ) {
                 break;
             }
+
+            // Budget is a property of the render, not of the chunk. Once it is
+            // spent every remaining chunk would evaluate the same false predicate
+            // and log the same refusal, so the loop ends here instead.
+            if ( ! TRP_LLM_Request_Retry::send_is_worthwhile() ) {
+                break;
+            }
         }
 
         return $translated_strings;
@@ -252,7 +259,10 @@ class TRP_Anthropic_Machine_Translator extends TRP_Machine_Translator {
 
         $pricing = self::get_anthropic_pricing();
         $models = array();
-        $preferred_order = array( 'claude-sonnet-4', 'claude-3-5-sonnet', 'claude-3-5-haiku', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku' );
+        // Verified against the Anthropic deprecation table on 2026-08-27. Every
+        // entry this list carried before that date had been retired: Sonnet 3.5
+        // on 2025-10-28, Haiku 3.5 on 2026-02-19, Opus 3 on 2026-01-05.
+        $preferred_order = array( 'claude-haiku-4-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-opus-5', 'claude-fable-5' );
 
         foreach ( $body['data'] as $model ) {
             $model_id = $model['id'];
@@ -263,7 +273,10 @@ class TRP_Anthropic_Machine_Translator extends TRP_Machine_Translator {
                 $display_name .= ' - ' . $price_str;
             }
 
-            if ( strpos( $model_id, 'claude-3-5-haiku' ) === 0 ) {
+            // Derived from the default rather than hardcoded. The literal that
+            // stood here marked Haiku 3.5, retired on 2026-02-19, so the list had
+            // no recommendation at all while claiming to have one.
+            if ( self::DEFAULT_MODEL === $model_id ) {
                 $display_name .= ' ★';
             }
 
@@ -296,12 +309,11 @@ class TRP_Anthropic_Machine_Translator extends TRP_Machine_Translator {
 
     private static function get_anthropic_pricing() {
         return array(
-            'claude-3-5-haiku'  => array( 'input' => 0.80, 'output' => 4.00 ),
-            'claude-3-5-sonnet' => array( 'input' => 3.00, 'output' => 15.00 ),
-            'claude-sonnet-4'   => array( 'input' => 3.00, 'output' => 15.00 ),
-            'claude-3-opus'     => array( 'input' => 15.00, 'output' => 75.00 ),
-            'claude-3-sonnet'   => array( 'input' => 3.00, 'output' => 15.00 ),
-            'claude-3-haiku'    => array( 'input' => 0.25, 'output' => 1.25 ),
+            'claude-haiku-4-5'  => array( 'input' => 1.00, 'output' => 5.00 ),
+            'claude-sonnet-5'   => array( 'input' => 2.00, 'output' => 10.00 ),
+            'claude-sonnet-4-6' => array( 'input' => 3.00, 'output' => 15.00 ),
+            'claude-opus-5'     => array( 'input' => 5.00, 'output' => 25.00 ),
+            'claude-fable-5'    => array( 'input' => 10.00, 'output' => 50.00 ),
         );
     }
 

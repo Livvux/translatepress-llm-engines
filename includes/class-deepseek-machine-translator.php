@@ -21,7 +21,7 @@ class TRP_DeepSeek_Machine_Translator extends TRP_Machine_Translator {
      * the form offered one model as selected while an unset option billed
      * a different and more expensive one. The other two now read this.
      */
-    const DEFAULT_MODEL = 'deepseek-chat';
+    const DEFAULT_MODEL = 'deepseek-v4-flash';
 
     public function send_request( $source_language, $target_language, $strings_array, $source_code = '', $target_code = '', $attempt = 0 ) {
         $model   = $this->get_model();
@@ -163,6 +163,13 @@ class TRP_DeepSeek_Machine_Translator extends TRP_Machine_Translator {
             if ( $this->machine_translator_logger->quota_exceeded() ) {
                 break;
             }
+
+            // Budget is a property of the render, not of the chunk. Once it is
+            // spent every remaining chunk would evaluate the same false predicate
+            // and log the same refusal, so the loop ends here instead.
+            if ( ! TRP_LLM_Request_Retry::send_is_worthwhile() ) {
+                break;
+            }
         }
 
         return $translated_strings;
@@ -213,6 +220,148 @@ class TRP_DeepSeek_Machine_Translator extends TRP_Machine_Translator {
 
     public function get_engine_specific_language_codes( $languages ) {
         return $this->trp_languages->get_iso_codes( $languages );
+    }
+
+    /**
+     * Where this key's model list is cached.
+     *
+     * Keyed by the key, so rotating one does not serve the previous account's
+     * catalogue. Extracted so a contract can assert it without an HTTP call.
+     *
+     * @param string $api_key Key the list belongs to.
+     *
+     * @return string
+     */
+    public static function models_transient_key( $api_key ) {
+        return 'trp_deepseek_models_' . md5( (string) $api_key );
+    }
+
+    /**
+     * The models this key may use, labelled and priced.
+     *
+     * DeepSeek was the one engine with no model list at all. Its dropdown was
+     * static, ajax_fetch_models() had no case for it and answered 'Invalid
+     * provider', and the admin JS quietly left it out of the refresh wiring. That
+     * is how deepseek-chat stayed the default four weeks after it was retired,
+     * because nothing in the plugin ever asked the provider what existed.
+     *
+     * @param string $api_key       Key to ask with.
+     * @param bool   $force_refresh Skip the cache.
+     *
+     * @return array Model id to label, or an 'error' key.
+     */
+    public static function get_available_models( $api_key, $force_refresh = false ) {
+        if ( empty( $api_key ) ) {
+            return array( 'error' => __( 'API key is required.', 'translatepress-llm-engines' ) );
+        }
+
+        $transient_key = self::models_transient_key( $api_key );
+
+        // Same shape as the three sibling engines: a refresh drops the entry
+        // first, so a failed fetch cannot leave the stale list serving.
+        if ( $force_refresh ) {
+            delete_transient( $transient_key );
+        } else {
+            $cached = get_transient( $transient_key );
+
+            if ( false !== $cached ) {
+                return $cached;
+            }
+        }
+
+        $response = wp_remote_get(
+            'https://api.deepseek.com/models',
+            array(
+                'timeout' => 30,
+                'headers' => array(
+                    'Authorization' => 'Bearer ' . $api_key,
+                    'Accept'        => 'application/json',
+                ),
+            )
+        );
+
+        if ( is_wp_error( $response ) ) {
+            return array( 'error' => $response->get_error_message() );
+        }
+
+        if ( 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+            $body      = json_decode( wp_remote_retrieve_body( $response ), true );
+            $error_msg = isset( $body['error']['message'] ) ? $body['error']['message'] : __( 'Failed to fetch models.', 'translatepress-llm-engines' );
+            return array( 'error' => $error_msg );
+        }
+
+        $body = json_decode( wp_remote_retrieve_body( $response ), true );
+
+        if ( ! isset( $body['data'] ) || ! is_array( $body['data'] ) ) {
+            return array( 'error' => __( 'Invalid response from DeepSeek API.', 'translatepress-llm-engines' ) );
+        }
+
+        $pricing = self::get_deepseek_pricing();
+        $models  = array();
+
+        // The pricing table is already the curated list in the order we want to
+        // offer them, so it is also the preferred order. Kept as one list, since
+        // two lists six lines apart drift the moment a model is added.
+        $preferred = array_keys( $pricing );
+
+        foreach ( $body['data'] as $model ) {
+            if ( ! isset( $model['id'] ) || ! is_string( $model['id'] ) ) {
+                continue;
+            }
+
+            $id = $model['id'];
+
+            // Vision and other non-text variants share the endpoint but not the
+            // contract this engine builds its body for.
+            if ( false !== strpos( $id, '-vision' ) ) {
+                continue;
+            }
+
+            $label = ucwords( str_replace( '-', ' ', $id ) );
+
+            if ( isset( $pricing[ $id ] ) ) {
+                $label .= sprintf( ' ($%s/$%s per 1M)', $pricing[ $id ]['input'], $pricing[ $id ]['output'] );
+            }
+
+            if ( self::DEFAULT_MODEL === $id ) {
+                $label .= ' ★';
+            }
+
+            $models[ $id ] = $label;
+        }
+
+        if ( array() === $models ) {
+            return array( 'error' => __( 'No usable models returned by DeepSeek.', 'translatepress-llm-engines' ) );
+        }
+
+        $rank = function ( $id ) use ( $preferred ) {
+            $index = array_search( $id, $preferred, true );
+
+            return false === $index ? PHP_INT_MAX : $index;
+        };
+
+        // Rank first, then id as the tiebreaker, both in one comparison. The
+        // spaceship operator rather than subtraction, for the same reason
+        // class-openrouter-machine-translator.php uses it.
+        uksort( $models, function ( $a, $b ) use ( $rank ) {
+            return array( $rank( $a ), $a ) <=> array( $rank( $b ), $b );
+        } );
+
+        set_transient( $transient_key, $models, DAY_IN_SECONDS );
+
+        return $models;
+    }
+
+    /**
+     * Published price per million tokens, verified 2026-08-27.
+     *
+     * @return array
+     */
+    private static function get_deepseek_pricing() {
+        return array(
+            'deepseek-v4-flash' => array( 'input' => 0.07, 'output' => 0.17 ),
+            'deepseek-v4-pro'   => array( 'input' => 0.79, 'output' => 2.38 ),
+        );
     }
 
     /**

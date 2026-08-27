@@ -1,21 +1,19 @@
+// One list, read by the toggler, the blur handlers, the option capture and the
+// refresh buttons. DeepSeek was registered as an engine and rendered as a
+// settings panel but was missing from some of those lists and not others, so
+// its fields did not follow the engine selector at all.
+var TRP_LLM_PROVIDERS = ['openai', 'anthropic', 'openrouter', 'deepseek'];
+
 jQuery(document).on('trpInitFieldToggler', function() {
-    var openaiKey = TRP_Field_Toggler();
-    openaiKey.init('.trp-translation-engine', '#trp-openai-api-key', 'openai');
-
-    var openaiModel = TRP_Field_Toggler();
-    openaiModel.init('.trp-translation-engine', '#trp-openai-model', 'openai');
-
-    var anthropicKey = TRP_Field_Toggler();
-    anthropicKey.init('.trp-translation-engine', '#trp-anthropic-api-key', 'anthropic');
-
-    var anthropicModel = TRP_Field_Toggler();
-    anthropicModel.init('.trp-translation-engine', '#trp-anthropic-model', 'anthropic');
-
-    var openrouterKey = TRP_Field_Toggler();
-    openrouterKey.init('.trp-translation-engine', '#trp-openrouter-api-key', 'openrouter');
-
-    var openrouterModel = TRP_Field_Toggler();
-    openrouterModel.init('.trp-translation-engine', '#trp-openrouter-model', 'openrouter');
+    TRP_LLM_PROVIDERS.forEach(function(provider) {
+        ['api-key', 'model'].forEach(function(field) {
+            TRP_Field_Toggler().init(
+                '.trp-translation-engine',
+                '#trp-' + provider + '-' + field,
+                provider
+            );
+        });
+    });
 });
 
 (function($) {
@@ -37,7 +35,7 @@ jQuery(document).on('trpInitFieldToggler', function() {
         captureServerOptions: function() {
             var self = this;
 
-            ['openai', 'anthropic', 'openrouter', 'deepseek'].forEach(function(provider) {
+            TRP_LLM_PROVIDERS.forEach(function(provider) {
                 var $select = $('#trp-' + provider + '-model');
                 if ($select.length) {
                     self.serverOptions[provider] = $select.html();
@@ -48,16 +46,10 @@ jQuery(document).on('trpInitFieldToggler', function() {
         bindEvents: function() {
             var self = this;
 
-            $('#trp-openai-api-key').on('blur', function() {
-                self.fetchModels('openai', $(this).val(), '#trp-openai-model');
-            });
-
-            $('#trp-anthropic-api-key').on('blur', function() {
-                self.fetchModels('anthropic', $(this).val(), '#trp-anthropic-model');
-            });
-
-            $('#trp-openrouter-api-key').on('blur', function() {
-                self.fetchModels('openrouter', $(this).val(), '#trp-openrouter-model');
+            TRP_LLM_PROVIDERS.forEach(function(provider) {
+                $('#trp-' + provider + '-api-key').on('blur', function() {
+                    self.fetchModels(provider, $(this).val(), '#trp-' + provider + '-model');
+                });
             });
 
             $(document).on('click', '.trp-llm-refresh-models', function(e) {
@@ -74,9 +66,7 @@ jQuery(document).on('trpInitFieldToggler', function() {
 
         addRefreshButtons: function() {
             var i18n = window.trp_llm_engines ? window.trp_llm_engines.i18n : { refresh: 'Refresh Models' };
-            var providers = ['openai', 'anthropic', 'openrouter'];
-
-            providers.forEach(function(provider) {
+            TRP_LLM_PROVIDERS.forEach(function(provider) {
                 var $select = $('#trp-' + provider + '-model');
                 if ($select.length && !$select.siblings('.trp-llm-refresh-models').length) {
                     $select.after(
@@ -126,15 +116,33 @@ jQuery(document).on('trpInitFieldToggler', function() {
                     if (response.success && response.data.models) {
                         var models = response.data.models;
                         var hasModels = false;
+                        var matched = false;
 
                         $.each(models, function(modelId, modelName) {
                             hasModels = true;
                             var $option = $('<option>').val(modelId).text(modelName);
                             if (modelId === currentValue) {
+                                matched = true;
                                 $option.prop('selected', true);
                             }
                             $select.append($option);
                         });
+
+                        // The saved model is not always in the fetched list: it may
+                        // have been retired, renamed, or typed in by hand. PHP
+                        // handles that when it renders the field, by prepending a
+                        // '(saved)' option, and empty() above had just thrown that
+                        // option away. Without this the browser falls back to the
+                        // first entry, and the next Save silently switches the site
+                        // to a model nobody chose and bills for it.
+                        if (hasModels && currentValue && !matched) {
+                            $select.prepend(
+                                $('<option>')
+                                    .val(currentValue)
+                                    .text(currentValue + ' (saved)')
+                                    .prop('selected', true)
+                            );
+                        }
 
                         if (!hasModels) {
                             $select.append($('<option>').val('').text(i18n.error));
@@ -172,7 +180,11 @@ jQuery(document).on('trpInitFieldToggler', function() {
     };
 
     $(document).ready(function() {
-        if ($('#trp-openai-api-key').length || $('#trp-anthropic-api-key').length || $('#trp-openrouter-api-key').length) {
+        var present = TRP_LLM_PROVIDERS.some(function(provider) {
+            return $('#trp-' + provider + '-api-key').length > 0;
+        });
+
+        if (present) {
             TRP_LLM_Models.init();
         }
     });

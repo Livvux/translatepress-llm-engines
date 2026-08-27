@@ -1,9 +1,9 @@
 # TranslatePress - LLM Translation Engines
 
-**Version:** 1.1.1
+**Version:** 1.2.2
 **Author:** Livvux (https://livvux.com)
 **License:** GPL2
-**Requires:** WordPress 5.0+, PHP 7.4+
+**Requires:** WordPress 5.0+, PHP 8.1+
 
 ## About This Plugin
 
@@ -75,7 +75,7 @@ The screenshot shows the Automatic Translation settings page where you can confi
 ## Requirements
 
 - WordPress 5.0 or higher
-- PHP 7.4 or higher
+- PHP 8.1 or higher
 - TranslatePress (free or Pro) - must be installed and activated
 - API keys for one or more translation providers:
   - [OpenAI API Key](https://platform.openai.com/api-keys)
@@ -132,10 +132,16 @@ The plugin supports translation between 80+ languages including:
 
 ## API Key Security
 
-- API keys are stored securely in WordPress options
-- Password fields prevent accidental exposure in admin interface
-- Keys are never transmitted to third parties (only to the respective AI provider)
-- Never share your API keys publicly
+- API keys are stored in the WordPress options table in plain text, the same way
+  every other TranslatePress engine stores its credentials. They are not encrypted.
+- The admin fields use `type="password"`, which hides the key on screen. Note that
+  the saved key is still written into the page source, so anyone who can read the
+  Machine Translation settings page can read the key. Masking and support for
+  defining keys in `wp-config.php` are planned for 1.3.0.
+- Keys are never transmitted to third parties, only to the respective AI provider.
+- Page content is sent to the provider you select. Review their data policy before
+  translating anything confidential.
+- Never share your API keys publicly.
 
 ## Cost Considerations
 
@@ -202,6 +208,48 @@ For issues or questions:
 4. Visit [livvux.com](https://livvux.com) for updates and other plugins
 
 ## Changelog
+
+### Version 1.2.2 (August 2026)
+
+Correctness release. Every item was measured against production data rather than
+inferred, and the offline checks in this release use the real failure samples.
+
+- **Fixed:** No request is issued that cannot finish inside the render budget.
+  `request_timeout()` had a `max( 5, ... )` floor that turned an already expired
+  deadline back into a five second request, and it also spent the entire remaining
+  budget on the socket with nothing left to parse and store the answer. Both were
+  the whole content of the HTTP failure log. Adds `send_is_worthwhile()`, a guard
+  before the first request, and one second of headroom.
+- **Fixed:** Fenced JSON carrying a trailing comma is now repaired instead of
+  discarding the chunk. The repair is a character scanner, not a regular
+  expression, so a translation that legitimately contains a comma before a bracket
+  cannot be rewritten.
+- **Fixed:** A stray closing bracket after an otherwise valid answer is trimmed.
+  A missing closing bracket is deliberately never invented, because that is
+  truncation and it has its own handler.
+- **Fixed:** A model that repeats its whole answer no longer costs the chunk. The
+  surplus is trimmed only when it is provably an echo, so a source string split
+  across several elements is still refused rather than stored misaligned.
+- **Fixed:** Retired default models. Anthropic defaulted to `claude-3-5-sonnet-20241022`,
+  retired 2025-10-28, and all three models it offered were retired. DeepSeek
+  defaulted to `deepseek-chat`, retired 2026-07-24. OpenAI listed `gpt-4-turbo`,
+  `gpt-3.5-turbo`, `o1-mini` and `o1-preview`, all shut down or shutting down.
+- **Fixed:** The OpenRouter price sort never worked. `usort` casts its comparator
+  to `int`, and per token prices differ in the 1e-7 range.
+- **Fixed:** Refreshing the model list no longer switches the site to a model
+  nobody chose when the saved model is absent from the provider's answer.
+- **Fixed:** Rotating an API key now clears that key's cached model list, which
+  previously kept serving the previous account's catalogue for a day.
+- **New:** DeepSeek is fully wired. It had no field toggler, no refresh button, no
+  AJAX case and no `get_available_models()` at all.
+- **Changed:** `Requires PHP` is now 8.1. The response normalizer uses
+  `array_is_list()`, which is 8.1 and up, so the declared 8.0 could fatal while
+  parsing a paid answer.
+
+### Version 1.2.1 (August 2026)
+- **New:** Reliability layer for the LLM engines: bounded retries, per engine
+  cooldowns, chunk runner with truncation escalation, response normalizer,
+  placeholder guard, translation skiplist, and breadcrumb logs for each.
 
 ### Version 1.1.1 (June 2026)
 - **New:** Added DeepSeek V4 Flash as the recommended OpenRouter preset
