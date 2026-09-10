@@ -27,8 +27,6 @@ class TRP_Anthropic_Machine_Translator extends TRP_Machine_Translator {
         $model   = $this->get_model();
         $api_key = $this->get_api_key();
 
-        $strings_json = wp_json_encode( array_values( $strings_array ), JSON_UNESCAPED_UNICODE );
-
         $context = TRP_LLM_Request_Shape::context(
             self::ENGINE,
             $model,
@@ -40,18 +38,10 @@ class TRP_Anthropic_Machine_Translator extends TRP_Machine_Translator {
             $attempt
         );
 
-        $prompts = TRP_LLM_Request_Shape::prompts( $context, $strings_json );
-
-        $body = array(
-            'model'      => $model,
-            'max_tokens' => TRP_LLM_Request_Shape::max_output_tokens( $strings_json, $context ),
-            'system'     => $prompts['system'],
-            'messages'   => array(
-                array( 'role' => 'user', 'content' => $prompts['user'] ),
-            ),
-        );
-
-        $body = apply_filters( 'trp_llm_request_body', $body, $context );
+        $body = TRP_LLM_Request_Shape::body( $context );
+        if ( is_wp_error( $body ) ) {
+            return $body;
+        }
 
         // No trp_llm_request_args filter here. WordPress fires http_request_args
         // on this array inside wp_remote_post() a moment later, with the URL, so
@@ -209,7 +199,7 @@ class TRP_Anthropic_Machine_Translator extends TRP_Machine_Translator {
      * @return string
      */
     public static function models_transient_key( $api_key ) {
-        return 'trp_anthropic_models_' . md5( (string) $api_key );
+        return 'trp_anthropic_models_v2_' . md5( (string) $api_key );
     }
 
     public static function get_available_models( $api_key, $force_refresh = false ) {
@@ -257,7 +247,6 @@ class TRP_Anthropic_Machine_Translator extends TRP_Machine_Translator {
             return array( 'error' => __( 'Invalid response from Anthropic API.', 'translatepress-llm-engines' ) );
         }
 
-        $pricing = self::get_anthropic_pricing();
         $models = array();
         // Verified against the Anthropic deprecation table on 2026-08-27. Every
         // entry this list carried before that date had been retired: Sonnet 3.5
@@ -265,10 +254,13 @@ class TRP_Anthropic_Machine_Translator extends TRP_Machine_Translator {
         $preferred_order = array( 'claude-haiku-4-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-opus-5', 'claude-fable-5' );
 
         foreach ( $body['data'] as $model ) {
+            if ( ! is_array( $model ) || ! isset( $model['id'] ) || ! is_string( $model['id'] ) ) {
+                continue;
+            }
             $model_id = $model['id'];
-            $display_name = isset( $model['display_name'] ) ? $model['display_name'] : $model_id;
+            $display_name = isset( $model['display_name'] ) && is_string( $model['display_name'] ) ? $model['display_name'] : $model_id;
 
-            $price_str = self::get_price_for_model( $model_id, $pricing );
+            $price_str = TRP_LLM_Model_Catalog::price_label( self::ENGINE, $model_id );
             if ( $price_str ) {
                 $display_name .= ' - ' . $price_str;
             }
@@ -305,25 +297,6 @@ class TRP_Anthropic_Machine_Translator extends TRP_Machine_Translator {
         set_transient( $transient_key, $models, DAY_IN_SECONDS );
 
         return $models;
-    }
-
-    private static function get_anthropic_pricing() {
-        return array(
-            'claude-haiku-4-5'  => array( 'input' => 1.00, 'output' => 5.00 ),
-            'claude-sonnet-5'   => array( 'input' => 2.00, 'output' => 10.00 ),
-            'claude-sonnet-4-6' => array( 'input' => 3.00, 'output' => 15.00 ),
-            'claude-opus-5'     => array( 'input' => 5.00, 'output' => 25.00 ),
-            'claude-fable-5'    => array( 'input' => 10.00, 'output' => 50.00 ),
-        );
-    }
-
-    private static function get_price_for_model( $model_id, $pricing ) {
-        foreach ( $pricing as $key => $prices ) {
-            if ( strpos( $model_id, $key ) === 0 ) {
-                return sprintf( '$%.2f/1M in, $%.2f/1M out', $prices['input'], $prices['output'] );
-            }
-        }
-        return '';
     }
 
     private function get_model() {

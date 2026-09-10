@@ -1,17 +1,9 @@
-// One list, read by the toggler, the blur handlers, the option capture and the
-// refresh buttons. DeepSeek was registered as an engine and rendered as a
-// settings panel but was missing from some of those lists and not others, so
-// its fields did not follow the engine selector at all.
 var TRP_LLM_PROVIDERS = ['openai', 'anthropic', 'openrouter', 'deepseek'];
 
 jQuery(document).on('trpInitFieldToggler', function() {
     TRP_LLM_PROVIDERS.forEach(function(provider) {
         ['api-key', 'model'].forEach(function(field) {
-            TRP_Field_Toggler().init(
-                '.trp-translation-engine',
-                '#trp-' + provider + '-' + field,
-                provider
-            );
+            TRP_Field_Toggler().init('.trp-translation-engine', '#trp-' + provider + '-' + field, provider);
         });
     });
 });
@@ -19,178 +11,151 @@ jQuery(document).on('trpInitFieldToggler', function() {
 (function($) {
     'use strict';
 
-    var TRP_LLM_Models = {
-        // Options as the server rendered them, captured before anything replaces
-        // them. This used to be a hardcoded object duplicating the PHP model
-        // lists, which had drifted from them and could not know about a custom
-        // model the user had saved.
-        serverOptions: {},
+    var config = window.trp_llm_engines || {};
+    var i18n = $.extend({
+        loading: 'Loading models...',
+        error: 'Error loading models. Your selection is unchanged.',
+        enter_api_key: 'Enter API key first',
+        refresh: 'Refresh Models',
+        saved: '(saved)'
+    }, config.i18n || {});
+    var states = Object.create(null);
 
-        init: function() {
-            this.captureServerOptions();
-            this.bindEvents();
-            this.addRefreshButtons();
-        },
+    function fields(provider) {
+        return {
+            select: $('#trp-' + provider + '-model'),
+            key: $('#trp-' + provider + '-api-key'),
+            button: $('.trp-llm-refresh-models[data-provider="' + provider + '"]'),
+            status: $('#trp-' + provider + '-model-status')
+        };
+    }
 
-        captureServerOptions: function() {
-            var self = this;
+    function busy(provider, value) {
+        var ui = fields(provider);
+        // Never enable a select here: TranslatePress owns the toggler's disabled state.
+        // Keep real options visible and submittable while an AJAX request is running.
+        ui.select.attr('aria-busy', value ? 'true' : 'false');
+        ui.button.prop('disabled', value).find('.dashicons').toggleClass('spin', value);
+    }
 
-            TRP_LLM_PROVIDERS.forEach(function(provider) {
-                var $select = $('#trp-' + provider + '-model');
-                if ($select.length) {
-                    self.serverOptions[provider] = $select.html();
+    function invalidate(provider) {
+        var state = states[provider];
+        state.sequence++;
+        var old = state.xhr;
+        state.xhr = null;
+        // Invalidate BEFORE abort(): jQuery can call error/complete synchronously.
+        if (old) {
+            old.abort();
+        }
+        busy(provider, false);
+    }
+
+    function fetchModels(provider, forceRefresh) {
+        var state = states[provider];
+        var ui = fields(provider);
+        var key = ui.key.val();
+        invalidate(provider);
+        if (provider !== 'openrouter' && !key) {
+            ui.status.text(i18n.enter_api_key);
+            return;
+        }
+        var sequence = state.sequence;
+        // The selected value never comes from a temporary loading/error option.
+        state.value = ui.select.val() || state.value;
+        busy(provider, true);
+        ui.status.text(i18n.loading);
+        function current() {
+            return state.sequence === sequence && ui.key.val() === key;
+        }
+        state.xhr = $.ajax({
+            url: config.ajax_url || window.ajaxurl,
+            type: 'POST',
+            timeout: 35000,
+            data: {
+                action: 'trp_llm_fetch_models',
+                nonce: config.nonce || '',
+                provider: provider,
+                api_key: key,
+                force_refresh: forceRefresh ? 1 : 0
+            },
+            success: function(response) {
+                if (!current()) {
+                    return;
                 }
-            });
-        },
-
-        bindEvents: function() {
-            var self = this;
-
-            TRP_LLM_PROVIDERS.forEach(function(provider) {
-                $('#trp-' + provider + '-api-key').on('blur', function() {
-                    self.fetchModels(provider, $(this).val(), '#trp-' + provider + '-model');
+                var models = response && response.success && response.data && response.data.models;
+                var ids = models && typeof models === 'object' && !Array.isArray(models) ? Object.keys(models) : [];
+                // Empty and malformed catalogues must leave ALL existing choices untouched.
+                if (!ids.length || ids.some(function(id) { return !id || typeof models[id] !== 'string'; })) {
+                    ui.status.text(i18n.error);
+                    return;
+                }
+                var selected = ui.select.val() || state.value;
+                var options = [];
+                ids.forEach(function(id) {
+                    options.push($('<option>').val(id).text(models[id])[0]);
                 });
-            });
-
-            $(document).on('click', '.trp-llm-refresh-models', function(e) {
-                e.preventDefault();
-                var $btn = $(this);
-                var provider = $btn.data('provider');
-                var apiKeySelector = '#trp-' + provider + '-api-key';
-                var modelSelector = '#trp-' + provider + '-model';
-                var apiKey = $(apiKeySelector).val();
-
-                self.fetchModels(provider, apiKey, modelSelector, true);
-            });
-        },
-
-        addRefreshButtons: function() {
-            var i18n = window.trp_llm_engines ? window.trp_llm_engines.i18n : { refresh: 'Refresh Models' };
-            TRP_LLM_PROVIDERS.forEach(function(provider) {
-                var $select = $('#trp-' + provider + '-model');
-                if ($select.length && !$select.siblings('.trp-llm-refresh-models').length) {
-                    $select.after(
-                        '<button type="button" class="button trp-llm-refresh-models" data-provider="' + provider + '" style="margin-left: 10px;">' +
-                        '<span class="dashicons dashicons-update" style="margin-top: 3px;"></span> ' + i18n.refresh +
-                        '</button>'
-                    );
+                if (selected && ids.indexOf(selected) === -1) {
+                    options.unshift($('<option>').val(selected).text(selected + ' ' + i18n.saved)[0]);
                 }
-            });
-        },
-
-        fetchModels: function(provider, apiKey, modelSelector, forceRefresh) {
-            var self = this;
-            var $select = $(modelSelector);
-            var $refreshBtn = $('.trp-llm-refresh-models[data-provider="' + provider + '"]');
-            var currentValue = $select.val();
-            var i18n = window.trp_llm_engines ? window.trp_llm_engines.i18n : {
-                loading: 'Loading models...',
-                error: 'Error loading models',
-                select_model: 'Select a model',
-                enter_api_key: 'Enter API key first'
-            };
-
-            if (provider !== 'openrouter' && !apiKey) {
-                return;
-            }
-
-            $select.prop('disabled', true);
-            $refreshBtn.prop('disabled', true).find('.dashicons').addClass('spin');
-
-            var $loadingOption = $('<option>').val('').text(i18n.loading);
-            $select.empty().append($loadingOption);
-
-            $.ajax({
-                url: window.trp_llm_engines ? window.trp_llm_engines.ajax_url : ajaxurl,
-                type: 'POST',
-                data: {
-                    action: 'trp_llm_fetch_models',
-                    nonce: window.trp_llm_engines ? window.trp_llm_engines.nonce : '',
-                    provider: provider,
-                    api_key: apiKey,
-                    force_refresh: forceRefresh ? 1 : 0
-                },
-                success: function(response) {
-                    $select.empty();
-
-                    if (response.success && response.data.models) {
-                        var models = response.data.models;
-                        var hasModels = false;
-                        var matched = false;
-
-                        $.each(models, function(modelId, modelName) {
-                            hasModels = true;
-                            var $option = $('<option>').val(modelId).text(modelName);
-                            if (modelId === currentValue) {
-                                matched = true;
-                                $option.prop('selected', true);
-                            }
-                            $select.append($option);
-                        });
-
-                        // The saved model is not always in the fetched list: it may
-                        // have been retired, renamed, or typed in by hand. PHP
-                        // handles that when it renders the field, by prepending a
-                        // '(saved)' option, and empty() above had just thrown that
-                        // option away. Without this the browser falls back to the
-                        // first entry, and the next Save silently switches the site
-                        // to a model nobody chose and bills for it.
-                        if (hasModels && currentValue && !matched) {
-                            $select.prepend(
-                                $('<option>')
-                                    .val(currentValue)
-                                    .text(currentValue + ' (saved)')
-                                    .prop('selected', true)
-                            );
-                        }
-
-                        if (!hasModels) {
-                            $select.append($('<option>').val('').text(i18n.error));
-                        }
-                    } else {
-                        var errorMsg = response.data && response.data.message ? response.data.message : i18n.error;
-                        $select.append($('<option>').val('').text(errorMsg));
-                        self.restoreDefaultModels(provider, $select, currentValue);
-                    }
-                },
-                error: function() {
-                    $select.empty().append($('<option>').val('').text(i18n.error));
-                    self.restoreDefaultModels(provider, $select, currentValue);
-                },
-                complete: function() {
-                    $select.prop('disabled', false);
-                    $refreshBtn.prop('disabled', false).find('.dashicons').removeClass('spin');
+                ui.select.empty().append(options);
+                if (selected) {
+                    ui.select.val(selected);
                 }
-            });
-        },
-
-        restoreDefaultModels: function(provider, $select, currentValue) {
-            var markup = this.serverOptions[provider];
-
-            if (!markup) {
-                return;
+                state.value = ui.select.val();
+                ui.status.text('');
+            },
+            error: function(xhr, reason) {
+                if (current() && reason !== 'abort') {
+                    ui.status.text(i18n.error);
+                }
+            },
+            complete: function() {
+                if (current()) {
+                    state.xhr = null;
+                    busy(provider, false);
+                }
             }
-
-            $select.html(markup);
-
-            if (currentValue) {
-                $select.val(currentValue);
-            }
-        }
-    };
-
-    $(document).ready(function() {
-        var present = TRP_LLM_PROVIDERS.some(function(provider) {
-            return $('#trp-' + provider + '-api-key').length > 0;
         });
+    }
 
-        if (present) {
-            TRP_LLM_Models.init();
-        }
+    $(function() {
+        TRP_LLM_PROVIDERS.forEach(function(provider) {
+            var ui = fields(provider);
+            if (!ui.select.length) {
+                return;
+            }
+            states[provider] = { sequence: 0, xhr: null, value: ui.select.val() };
+            if (!ui.button.length) {
+                $('<button>', {
+                    type: 'button',
+                    'class': 'button trp-llm-refresh-models',
+                    'data-provider': provider
+                }).append($('<span>', { 'class': 'dashicons dashicons-update', 'aria-hidden': 'true' }))
+                    .append(document.createTextNode(' ' + i18n.refresh)).insertAfter(ui.select);
+            }
+            $('<span>', {
+                id: 'trp-' + provider + '-model-status',
+                'class': 'trp-llm-model-status',
+                role: 'status',
+                'aria-live': 'polite'
+            }).insertAfter(fields(provider).button);
+            ui.select.on('change.trpLlm', function() {
+                states[provider].value = $(this).val();
+            });
+            ui.key.on('input.trpLlm', function() {
+                invalidate(provider);
+                fields(provider).status.text('');
+            }).on('blur.trpLlm', function() {
+                fetchModels(provider, false);
+            });
+            fields(provider).button.on('click.trpLlm', function(event) {
+                event.preventDefault();
+                fetchModels(provider, true);
+            });
+        });
     });
 
     var style = document.createElement('style');
-    style.textContent = '.trp-llm-refresh-models .dashicons.spin { animation: trp-spin 1s linear infinite; } @keyframes trp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }';
+    style.textContent = '.trp-llm-refresh-models{margin-left:10px}.trp-llm-model-status{display:block}.trp-llm-refresh-models .dashicons.spin{animation:trp-spin 1s linear infinite}@keyframes trp-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
     document.head.appendChild(style);
-
 })(jQuery);

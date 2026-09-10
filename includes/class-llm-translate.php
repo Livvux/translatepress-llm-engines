@@ -25,6 +25,10 @@ class TRP_LLM_Translate {
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-http-failure-log.php';
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-request-retry.php';
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-engine-cooldown.php';
+        require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-storage.php';
+        require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-model-catalog.php';
+        require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-cost-ledger.php';
+        require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-translation-state.php';
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-request-shape.php';
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-chunk-runner.php';
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-key-verdict.php';
@@ -35,6 +39,13 @@ class TRP_LLM_Translate {
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-anthropic-machine-translator.php';
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-openrouter-machine-translator.php';
         require_once TRP_LLM_ENGINES_PLUGIN_DIR . 'includes/class-deepseek-machine-translator.php';
+
+        add_action( 'trp_llm_housekeeping', array( 'TRP_LLM_Storage', 'cleanup' ) );
+        if ( ! wp_next_scheduled( 'trp_llm_housekeeping' ) ) {
+            wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', 'trp_llm_housekeeping' );
+            TRP_LLM_Breadcrumb::prune();
+        }
+        add_filter( 'pre_option_trp_llm_cost_daily', array( 'TRP_LLM_Cost_Ledger', 'legacy_totals' ) );
     }
 
     public function enqueue_admin_scripts( $hook ) {
@@ -43,7 +54,7 @@ class TRP_LLM_Translate {
                 'trp-llm-engines-settings',
                 TRP_LLM_ENGINES_PLUGIN_URL . 'assets/js/trp-llm-engines-settings.js',
                 array( 'jquery' ),
-                TRP_LLM_ENGINES_VERSION,
+                TRP_LLM_ENGINES_VERSION . '-reliability-1',
                 true
             );
 
@@ -52,10 +63,11 @@ class TRP_LLM_Translate {
                 'nonce'    => wp_create_nonce( 'trp_llm_fetch_models' ),
                 'i18n'     => array(
                     'loading'       => __( 'Loading models...', 'translatepress-llm-engines' ),
-                    'error'         => __( 'Error loading models', 'translatepress-llm-engines' ),
+                    'error'         => __( 'Error loading models. Your selection is unchanged.', 'translatepress-llm-engines' ),
                     'select_model'  => __( 'Select a model', 'translatepress-llm-engines' ),
                     'enter_api_key' => __( 'Enter API key first', 'translatepress-llm-engines' ),
                     'refresh'       => __( 'Refresh Models', 'translatepress-llm-engines' ),
+                    'saved'         => __( '(saved)', 'translatepress-llm-engines' ),
                 ),
             ) );
         }
@@ -68,8 +80,8 @@ class TRP_LLM_Translate {
             wp_send_json_error( array( 'message' => __( 'Permission denied.', 'translatepress-llm-engines' ) ) );
         }
 
-        $provider = isset( $_POST['provider'] ) ? sanitize_text_field( $_POST['provider'] ) : '';
-        $api_key  = isset( $_POST['api_key'] ) ? sanitize_text_field( $_POST['api_key'] ) : '';
+        $provider = isset( $_POST['provider'] ) && is_string( $_POST['provider'] ) ? sanitize_text_field( wp_unslash( $_POST['provider'] ) ) : '';
+        $api_key  = isset( $_POST['api_key'] ) && is_string( $_POST['api_key'] ) ? sanitize_text_field( wp_unslash( $_POST['api_key'] ) ) : '';
 
         // The Refresh Models button has always sent this. Reading it is what
         // turns the button from decoration into a cache bust.
@@ -480,7 +492,7 @@ class TRP_LLM_Translate {
                     </select>
                 </div>
                 <span class="trp-description-text">
-                    <?php esc_html_e( 'DeepSeek V4 Flash offers excellent translation quality at the lowest cost. ~$0.07/1M input, ~$0.17/1M output tokens.', 'translatepress-llm-engines' ); ?>
+                    <?php esc_html_e( 'Select a DeepSeek model. Unverified prices are shown as unknown; confirm current pricing with the provider.', 'translatepress-llm-engines' ); ?>
                 </span>
             </div>
 

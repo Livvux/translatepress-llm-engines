@@ -24,6 +24,8 @@ jobs:
           --health-interval=10s --health-timeout=5s --health-retries=10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
         with:
           php-version: '8.4'
@@ -32,22 +34,39 @@ jobs:
           coverage: none
       - name: Install disposable WordPress and TranslatePress
         run: |
-          wp core download --path=/tmp/wordpress
+          wp core download --version=7.1 --path=/tmp/wordpress
           wp config create --path=/tmp/wordpress --dbname=wordpress --dbuser=root --dbpass=integration --dbhost=127.0.0.1:3306
           wp core install --path=/tmp/wordpress --url=http://integration.test --title=Integration --admin_user=integration --admin_password=integration-only --admin_email=integration@example.test --skip-email
-          wp plugin install translatepress-multilingual --path=/tmp/wordpress
+          wp plugin install translatepress-multilingual --version=3.3.5 --path=/tmp/wordpress
           ln -s "$GITHUB_WORKSPACE" /tmp/wordpress/wp-content/plugins/translatepress-llm-engines
+      - name: Activate plugins with isolated fixture settings
+        run: |
+          wp config set TRP_LLM_INTEGRATION_TESTS true --raw --path=/tmp/wordpress
+          wp config set DISABLE_WP_CRON true --raw --path=/tmp/wordpress
+          mkdir -p /tmp/wordpress/wp-content/mu-plugins
+          cp tests/integration/http-fixture.php /tmp/wordpress/wp-content/mu-plugins/llm-http-fixture.php
+          wp option update trp_settings '{"default-language":"en_US","translation-languages":["en_US","de_DE"],"publish-languages":["en_US","de_DE"],"url-slugs":{"en_US":"en","de_DE":"de"}}' --format=json --path=/tmp/wordpress
+          wp option update trp_machine_translation_settings '{"machine-translation":"yes","translation-engine":"openai","openai-model":"gpt-4o-mini","openai-api-key":"integration-not-real","machine_translation_log":"yes","machine_translation_limit":1000000}' --format=json --path=/tmp/wordpress
+          wp plugin activate translatepress-multilingual translatepress-llm-engines --path=/tmp/wordpress
       - name: Integration tests
-        if: ${{ hashFiles('tests/integration/run.php') != '' }}
         run: wp eval-file "$GITHUB_WORKSPACE/tests/integration/run.php" --path=/tmp/wordpress
+      - name: JavaScript DOM regression tests
+        if: always()
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npm test
       - name: Source fixture for reproducibility
+        if: always()
         run: |
           mkdir -p /tmp/fixture/repo /tmp/fixture/vendor
           git archive HEAD | tar -x -C /tmp/fixture/repo
+          test ! -f package-lock.json || cp package-lock.json /tmp/fixture/
+          test ! -d node_modules || tar -czf /tmp/fixture/node-modules.tar.gz node_modules
           cp -r /tmp/wordpress/wp-content/plugins/translatepress-multilingual /tmp/fixture/vendor/
           wp core version --path=/tmp/wordpress > /tmp/fixture/wordpress-version.txt
           wp plugin get translatepress-multilingual --field=version --path=/tmp/wordpress > /tmp/fixture/translatepress-version.txt
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
           name: integration-source
           path: /tmp/fixture

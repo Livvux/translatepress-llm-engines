@@ -69,6 +69,57 @@ class TRP_LLM_Request_Shape {
         );
     }
 
+    /** Build exactly the body used by every provider and by per-string identity. */
+    public static function body( array $context ) {
+        $json = wp_json_encode( array_values( $context['strings'] ), JSON_UNESCAPED_UNICODE );
+        if ( false === $json ) {
+            return new WP_Error( 'trp_llm_invalid_encoding', 'Unable to encode translation strings.' );
+        }
+        $prompts = self::prompts( $context, $json );
+        $tokens = self::max_output_tokens( $json, $context );
+        $body = array(
+            'model' => $context['model'],
+            'messages' => array(
+                array( 'role' => 'system', 'content' => $prompts['system'] ),
+                array( 'role' => 'user', 'content' => $prompts['user'] ),
+            ),
+            'max_tokens' => $tokens,
+            'temperature' => 0.1,
+        );
+        if ( 'anthropic' === $context['engine'] ) {
+            $body['system'] = $prompts['system'];
+            $body['messages'] = array( $body['messages'][1] );
+            unset( $body['temperature'] );
+        } elseif ( 'openai' === $context['engine'] ) {
+            $parameters = TRP_LLM_Model_Catalog::parameters( $context['model'], $tokens );
+            if ( is_wp_error( $parameters ) ) {
+                return $parameters;
+            }
+            unset( $body['max_tokens'], $body['temperature'] );
+            $body += $parameters;
+        }
+        if ( 'anthropic' !== $context['engine'] ) {
+            $format = self::optional( 'trp_llm_response_format', $context );
+            if ( $format ) {
+                $body['response_format'] = $format;
+            }
+        }
+        if ( 'openrouter' === $context['engine'] ) {
+            $body['reasoning'] = array( 'enabled' => false );
+            $body['usage'] = array( 'include' => true );
+            $body['provider'] = array( 'data_collection' => 'deny', 'allow_fallbacks' => true );
+            $fallbacks = self::optional( 'trp_llm_openrouter_fallback_models', $context );
+            if ( $fallbacks ) {
+                $body['models'] = array_values( $fallbacks );
+            }
+        }
+        $body = apply_filters( 'trp_llm_request_body', $body, $context );
+        if ( ! is_array( $body ) || ! empty( $body['stream'] ) ) {
+            return new WP_Error( 'trp_llm_invalid_body', 'Expected a non-streaming translation request body.' );
+        }
+        return 'openai' === $context['engine'] ? TRP_LLM_Model_Catalog::validate( $body ) : $body;
+    }
+
     /**
      * Output ceiling for a chunk.
      *
@@ -119,15 +170,26 @@ class TRP_LLM_Request_Shape {
             return null;
         }
 
-        if ( isset( $body['choices'][0]['message']['content'] ) && is_string( $body['choices'][0]['message']['content'] ) ) {
-            return $body['choices'][0]['message']['content'];
+        if ( isset( $body['choices'] ) ) {
+            $content = $body['choices'][0]['message']['content'] ?? null;
+            return is_string( $content ) ? $content : null;
         }
-
-        if ( isset( $body['content'][0]['text'] ) && is_string( $body['content'][0]['text'] ) ) {
-            return $body['content'][0]['text'];
+        if ( ! isset( $body['content'] ) || ! is_array( $body['content'] ) ) {
+            return null;
         }
-
-        return null;
+        $text = array();
+        foreach ( $body['content'] as $block ) {
+            if ( ! is_array( $block ) || ! isset( $block['type'] ) ) {
+                return null;
+            }
+            if ( 'text' === $block['type'] && isset( $block['text'] ) && is_string( $block['text'] ) ) {
+                $text[] = $block['text'];
+            } elseif ( ! in_array( $block['type'], array( 'thinking', 'redacted_thinking' ), true ) ) {
+                // Never mistake tool output or unknown block types for translation text.
+                return null;
+            }
+        }
+        return $text ? implode( '', $text ) : null;
     }
 
     /**
@@ -222,85 +284,17 @@ class TRP_LLM_Request_Shape {
      * @return bool
      */
     public static function was_truncated( $body ) {
-        return in_array( self::finish_reason( $body ), array( 'length', 'max_tokens' ), true );
+        return in_array( self::finish_reason( $body ), array( 'length', 'max_tokens', 'model_context_window_exceeded' ), true );
     }
 
-    /**
-     * Cost seen this request, flushed once on shutdown.
-     *
-     * @var array<string, float>
-     */
-    private static $pending_cost = array();
-
-    /**
-     * Note what a response says it cost.
-     *
-     * The vendor counts characters, which is a proxy for spend that holds only
-     * while the model and the provider stay the same. A provider that reports the
-     * real figure is worth believing.
-     *
-     * Accumulated in memory rather than written per chunk. The option is a single
-     * shared row and the update is a read modify write with no locking, so a
-     * preload storm after a deploy purge would have several workers overwriting
-     * each other's increments, and the daily total would under-report by an
-     * unknown amount. One write per request shrinks that window to something a
-     * daily total can live with.
-     *
-     * @param string $engine Engine slug.
-     * @param array  $body   Decoded response body.
-     *
-     * @return void
-     */
+    /** Record immediately and atomically, not in a shared shutdown option. */
     public static function record_cost( $engine, $body ) {
-        if ( ! is_array( $body ) || ! isset( $body['usage']['cost'] ) || ! is_numeric( $body['usage']['cost'] ) ) {
-            return;
-        }
-
-        $cost = (float) $body['usage']['cost'];
-
-        if ( $cost <= 0 ) {
-            return;
-        }
-
-        $key = gmdate( 'Y-m-d' ) . '|' . $engine;
-
-        if ( array() === self::$pending_cost ) {
-            add_action( 'shutdown', array( __CLASS__, 'flush_cost' ), 99 );
-        }
-
-        self::$pending_cost[ $key ] = isset( self::$pending_cost[ $key ] )
-            ? self::$pending_cost[ $key ] + $cost
-            : $cost;
+        TRP_LLM_Cost_Ledger::record( $engine, $body );
     }
 
-    /**
-     * Write this request's accumulated cost into the rolling daily log.
-     *
-     * @return void
-     */
+    /** Compatibility for callers of the previous deferred writer. */
     public static function flush_cost() {
-        if ( array() === self::$pending_cost ) {
-            return;
-        }
-
-        $log = get_option( 'trp_llm_cost_daily', array() );
-
-        if ( ! is_array( $log ) ) {
-            $log = array();
-        }
-
-        foreach ( self::$pending_cost as $key => $cost ) {
-            $log[ $key ] = isset( $log[ $key ] ) ? (float) $log[ $key ] + $cost : $cost;
-        }
-
-        self::$pending_cost = array();
-
-        if ( count( $log ) > 90 ) {
-            ksort( $log );
-            $log = array_slice( $log, -90, null, true );
-        }
-
-        update_option( 'trp_llm_cost_daily', $log, false );
+        // Costs are already committed by record_cost().
     }
 
     /**

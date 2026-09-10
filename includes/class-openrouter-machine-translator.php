@@ -27,8 +27,6 @@ class TRP_OpenRouter_Machine_Translator extends TRP_Machine_Translator {
         $model   = $this->get_model();
         $api_key = $this->get_api_key();
 
-        $strings_json = wp_json_encode( array_values( $strings_array ), JSON_UNESCAPED_UNICODE );
-
         $context = TRP_LLM_Request_Shape::context(
             self::ENGINE,
             $model,
@@ -40,48 +38,10 @@ class TRP_OpenRouter_Machine_Translator extends TRP_Machine_Translator {
             $attempt
         );
 
-        $prompts = TRP_LLM_Request_Shape::prompts( $context, $strings_json );
-
-        $body = array(
-            'model'       => $model,
-            'messages'    => array(
-                array( 'role' => 'system', 'content' => $prompts['system'] ),
-                array( 'role' => 'user', 'content' => $prompts['user'] ),
-            ),
-            'temperature' => 0.1,
-            'max_tokens'  => TRP_LLM_Request_Shape::max_output_tokens( $strings_json, $context ),
-            // A reasoning model spends its output budget thinking and then
-            // returns an empty content string, which is indistinguishable from
-            // every other failure once it reaches the parser.
-            'reasoning'   => array( 'enabled' => false ),
-            // The only real cost signal available.
-            'usage'       => array( 'include' => true ),
-            'provider'    => array(
-                'data_collection' => 'deny',
-                'allow_fallbacks' => true,
-            ),
-        );
-
-        // Off by default rather than json_object. A downstream filter on this
-        // site asks the model for a bare JSON array, and OpenAI compatible
-        // json_object mode requires an object, so switching this on without
-        // changing that instruction first would put two contradictory demands in
-        // one request.
-        $response_format = TRP_LLM_Request_Shape::optional( 'trp_llm_response_format', $context );
-
-        if ( array() !== $response_format ) {
-            $body['response_format'] = $response_format;
+        $body = TRP_LLM_Request_Shape::body( $context );
+        if ( is_wp_error( $body ) ) {
+            return $body;
         }
-
-        // Empty by default on purpose. A silent fallback to a second model
-        // changes both cost and voice with no trace in the answer.
-        $fallbacks = TRP_LLM_Request_Shape::optional( 'trp_llm_openrouter_fallback_models', $context );
-
-        if ( array() !== $fallbacks ) {
-            $body['models'] = array_values( $fallbacks );
-        }
-
-        $body = apply_filters( 'trp_llm_request_body', $body, $context );
 
         // No trp_llm_request_args filter here. WordPress fires http_request_args
         // on this array inside wp_remote_post() a moment later, with the URL, so
@@ -241,7 +201,7 @@ class TRP_OpenRouter_Machine_Translator extends TRP_Machine_Translator {
      * @return string
      */
     public static function models_transient_key( $api_key ) {
-        return 'trp_openrouter_models_' . md5( (string) $api_key );
+        return 'trp_openrouter_models_v2_' . md5( (string) $api_key );
     }
 
     public static function get_available_models( $api_key, $force_refresh = false ) {
@@ -294,6 +254,9 @@ class TRP_OpenRouter_Machine_Translator extends TRP_Machine_Translator {
         $preferred_providers = array( 'anthropic', 'openai', 'google', 'meta-llama', 'mistralai', 'deepseek' );
 
         foreach ( $body['data'] as $model ) {
+            if ( ! is_array( $model ) || ! isset( $model['id'] ) || ! is_string( $model['id'] ) ) {
+                continue;
+            }
             $model_id = $model['id'];
             $model_name = isset( $model['name'] ) ? $model['name'] : $model_id;
 
@@ -308,8 +271,8 @@ class TRP_OpenRouter_Machine_Translator extends TRP_Machine_Translator {
             }
 
             $pricing = isset( $model['pricing'] ) ? $model['pricing'] : array();
-            $prompt_price = isset( $pricing['prompt'] ) ? floatval( $pricing['prompt'] ) : 0;
-            $completion_price = isset( $pricing['completion'] ) ? floatval( $pricing['completion'] ) : 0;
+            $prompt_price = isset( $pricing['prompt'] ) && TRP_LLM_Model_Catalog::valid_price( $pricing['prompt'] ) ? (float) $pricing['prompt'] : null;
+            $completion_price = isset( $pricing['completion'] ) && TRP_LLM_Model_Catalog::valid_price( $pricing['completion'] ) ? (float) $pricing['completion'] : null;
 
             $models[] = array(
                 'id'               => $model_id,
@@ -331,7 +294,7 @@ class TRP_OpenRouter_Machine_Translator extends TRP_Machine_Translator {
             // Spaceship, not subtraction. usort casts the return to int, and
             // OpenRouter quotes prices per token, so every real difference was
             // in the 1e-7 range and truncated to zero. This sort has never run.
-            return $a['prompt_price'] <=> $b['prompt_price'];
+            return ( $a['prompt_price'] ?? INF ) <=> ( $b['prompt_price'] ?? INF );
         } );
 
         $result = array();
@@ -350,14 +313,10 @@ class TRP_OpenRouter_Machine_Translator extends TRP_Machine_Translator {
     }
 
     private static function format_openrouter_price( $prompt_price, $completion_price ) {
-        if ( $prompt_price <= 0 && $completion_price <= 0 ) {
-            return 'Free';
-        }
-
-        $prompt_per_1m = $prompt_price * 1000000;
-        $completion_per_1m = $completion_price * 1000000;
-
-        return sprintf( '$%.2f/1M in, $%.2f/1M out', $prompt_per_1m, $completion_per_1m );
+        return TRP_LLM_Model_Catalog::format_price(
+            null === $prompt_price ? null : $prompt_price * 1000000,
+            null === $completion_price ? null : $completion_price * 1000000
+        );
     }
 
     private function get_model() {

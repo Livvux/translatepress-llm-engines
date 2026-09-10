@@ -69,7 +69,7 @@ class TRP_LLM_Engine_Cooldown {
     const RATE_LIMIT_FLOOR = 60;
 
     /**
-     * Longest pause a rate limit may impose.
+     * Legacy constant retained for callers; no longer caps server-directed waits.
      */
     const RATE_LIMIT_CEILING = 3600;
 
@@ -173,34 +173,20 @@ class TRP_LLM_Engine_Cooldown {
      * @return int
      */
     public static function seconds_for( $reason, $response = null, $classification = '', $engine = '' ) {
+        $header = trim( (string) wp_remote_retrieve_header( $response, 'retry-after' ) );
+        $requested = '' === $header ? 0 : TRP_LLM_Request_Retry::retry_after_seconds( $response, PHP_INT_MAX - time() );
         if ( 'http-401' === $reason || 'http-402' === $reason ) {
-            return (int) apply_filters( 'trp_llm_credential_cooldown', self::CREDENTIAL_SECONDS, $reason, $engine );
+            $seconds = apply_filters( 'trp_llm_credential_cooldown', self::CREDENTIAL_SECONDS, $reason, $engine );
+        } elseif ( 'http-429' === $reason ) {
+            $seconds = apply_filters( 'trp_llm_rate_limit_cooldown', max( self::RATE_LIMIT_FLOOR, $requested ), $requested, $engine );
+        } elseif ( 'permanent' === $classification ) {
+            $seconds = apply_filters( 'trp_llm_permanent_cooldown', self::PERMANENT_SECONDS, $reason, $engine );
+        } elseif ( 'retryable' === $classification ) {
+            $seconds = apply_filters( 'trp_llm_retryable_cooldown', self::RETRYABLE_SECONDS, $reason, $engine );
+        } else {
+            return 0;
         }
-
-        if ( 'http-429' === $reason ) {
-            $requested = TRP_LLM_Request_Retry::retry_after_seconds( $response, PHP_INT_MAX );
-
-            return (int) apply_filters(
-                'trp_llm_rate_limit_cooldown',
-                min( self::RATE_LIMIT_CEILING, max( self::RATE_LIMIT_FLOOR, $requested ) ),
-                $requested,
-                $engine
-            );
-        }
-
-        // Enumerating the reasons that deserve a cooldown left the commonest
-        // misconfiguration out of it. An empty saved model name produces a 400,
-        // which is http-4xx, which got nothing, so the runaway loop this class
-        // was written to stop carried on for a fault that needs a human. Asking
-        // the classifier instead makes 400, 403 and 404 correct by construction.
-        if ( 'permanent' === $classification ) {
-            return (int) apply_filters( 'trp_llm_permanent_cooldown', self::PERMANENT_SECONDS, $reason, $engine );
-        }
-
-        if ( 'retryable' === $classification ) {
-            return (int) apply_filters( 'trp_llm_retryable_cooldown', self::RETRYABLE_SECONDS, $reason, $engine );
-        }
-
-        return 0;
+        // A filter may lengthen a server-directed wait but must not shorten it.
+        return max( $requested, (int) $seconds );
     }
 }

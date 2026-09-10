@@ -27,8 +27,6 @@ class TRP_DeepSeek_Machine_Translator extends TRP_Machine_Translator {
         $model   = $this->get_model();
         $api_key = $this->get_api_key();
 
-        $strings_json = wp_json_encode( array_values( $strings_array ), JSON_UNESCAPED_UNICODE );
-
         $context = TRP_LLM_Request_Shape::context(
             self::ENGINE,
             $model,
@@ -40,25 +38,10 @@ class TRP_DeepSeek_Machine_Translator extends TRP_Machine_Translator {
             $attempt
         );
 
-        $prompts = TRP_LLM_Request_Shape::prompts( $context, $strings_json );
-
-        $body = array(
-            'model'       => $model,
-            'messages'    => array(
-                array( 'role' => 'system', 'content' => $prompts['system'] ),
-                array( 'role' => 'user', 'content' => $prompts['user'] ),
-            ),
-            'temperature' => 0.1,
-            'max_tokens'  => TRP_LLM_Request_Shape::max_output_tokens( $strings_json, $context ),
-        );
-
-        $response_format = TRP_LLM_Request_Shape::optional( 'trp_llm_response_format', $context );
-
-        if ( array() !== $response_format ) {
-            $body['response_format'] = $response_format;
+        $body = TRP_LLM_Request_Shape::body( $context );
+        if ( is_wp_error( $body ) ) {
+            return $body;
         }
-
-        $body = apply_filters( 'trp_llm_request_body', $body, $context );
 
         // No trp_llm_request_args filter here. WordPress fires http_request_args
         // on this array inside wp_remote_post() a moment later, with the URL, so
@@ -233,7 +216,7 @@ class TRP_DeepSeek_Machine_Translator extends TRP_Machine_Translator {
      * @return string
      */
     public static function models_transient_key( $api_key ) {
-        return 'trp_deepseek_models_' . md5( (string) $api_key );
+        return 'trp_deepseek_models_v2_' . md5( (string) $api_key );
     }
 
     /**
@@ -296,13 +279,9 @@ class TRP_DeepSeek_Machine_Translator extends TRP_Machine_Translator {
             return array( 'error' => __( 'Invalid response from DeepSeek API.', 'translatepress-llm-engines' ) );
         }
 
-        $pricing = self::get_deepseek_pricing();
         $models  = array();
 
-        // The pricing table is already the curated list in the order we want to
-        // offer them, so it is also the preferred order. Kept as one list, since
-        // two lists six lines apart drift the moment a model is added.
-        $preferred = array_keys( $pricing );
+        $preferred = array( self::DEFAULT_MODEL, 'deepseek-v4-pro' );
 
         foreach ( $body['data'] as $model ) {
             if ( ! isset( $model['id'] ) || ! is_string( $model['id'] ) ) {
@@ -319,9 +298,7 @@ class TRP_DeepSeek_Machine_Translator extends TRP_Machine_Translator {
 
             $label = ucwords( str_replace( '-', ' ', $id ) );
 
-            if ( isset( $pricing[ $id ] ) ) {
-                $label .= sprintf( ' ($%s/$%s per 1M)', $pricing[ $id ]['input'], $pricing[ $id ]['output'] );
-            }
+            $label .= ' - ' . TRP_LLM_Model_Catalog::price_label( self::ENGINE, $id );
 
             if ( self::DEFAULT_MODEL === $id ) {
                 $label .= ' ★';
@@ -350,18 +327,6 @@ class TRP_DeepSeek_Machine_Translator extends TRP_Machine_Translator {
         set_transient( $transient_key, $models, DAY_IN_SECONDS );
 
         return $models;
-    }
-
-    /**
-     * Published price per million tokens, verified 2026-08-27.
-     *
-     * @return array
-     */
-    private static function get_deepseek_pricing() {
-        return array(
-            'deepseek-v4-flash' => array( 'input' => 0.07, 'output' => 0.17 ),
-            'deepseek-v4-pro'   => array( 'input' => 0.79, 'output' => 2.38 ),
-        );
     }
 
     /**
