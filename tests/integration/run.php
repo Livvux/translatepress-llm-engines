@@ -1,7 +1,7 @@
 <?php
 /** Real WordPress + TranslatePress + MariaDB. Only provider HTTP is a fixture. */
 if ( ! defined( 'TRP_LLM_INTEGRATION_TESTS' ) || ! TRP_LLM_INTEGRATION_TESTS || ! defined( 'WP_CLI' ) || ! WP_CLI ) { exit( 1 ); }
-global $wpdb;
+global $wpdb, $checks;
 $checks = 0;
 function expect( $condition, $name ) {
     global $checks; $checks++;
@@ -44,13 +44,19 @@ $settings = $trp->get_component( 'settings' )->get_settings();
 expect( $engine instanceof TRP_OpenAI_Machine_Translator, 'plugin boot registers real OpenAI engine' );
 expect( TRP_LLM_Storage::ensure(), 'upgrade installs state and cost tables' );
 $state = TRP_LLM_Storage::table( 'state' ); $costs = TRP_LLM_Storage::table( 'costs' );
+$query->check_original_table();
+$query->check_original_meta_table();
 $query->check_table( 'en_US', 'de_DE' );
 $dictionary = $query->get_table_name( 'de_DE' );
 reset_fixture( 'partial' );
 $source = array( 'Hello %s', 'Broken content', '<b>Welcome</b>', '日本語テキスト' );
 $rendered = $renderer->process_strings( $source, 'de_DE' );
 expect( $GLOBALS['fixture_calls'] === 1, 'real renderer sends one paid fixture batch' );
-$rows = $query->get_existing_translations( $source, 'de_DE' );
+$rows = array();
+// The translated-only lookup omits pending rows and does not return row IDs.
+foreach ( $query->get_string_rows( array(), $source, 'de_DE', OBJECT ) as $row ) {
+    $rows[ $row->original ] = $row;
+}
 expect( isset( $rows['Hello %s'] ) && $rows['Hello %s']->translated === 'DE: Hello %s' && (int) $rows['Hello %s']->status === $query->get_constant_machine_translated(), 'real TP persistence restores placeholders and stores machine status' );
 expect( isset( $rows['Broken content'] ) && (int) $rows['Broken content']->status === $query->get_constant_not_translated() && empty( $rows['Broken content']->translated ), 'rejected sibling remains pending in real dictionary' );
 expect( $rows['<b>Welcome</b>']->translated === 'DE: <b>Welcome</b>', 'HTML survives dictionary persistence' );
