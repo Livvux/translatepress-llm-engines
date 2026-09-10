@@ -75,6 +75,13 @@ class TRP_LLM_Placeholder_Guard {
             return false;
         }
 
+        // An empty answer has the same placeholder inventory as ordinary prose,
+        // but storing it would erase visible content. Keep legitimately blank
+        // sources valid, including Unicode whitespace used for layout.
+        if ( 1 === preg_match( '/^\s*$/uD', $translation ) && 1 !== preg_match( '/^\s*$/uD', $source ) ) {
+            return false;
+        }
+
         foreach ( self::PATTERNS as $pattern ) {
             if ( self::inventory( $pattern, $source ) !== self::inventory( $pattern, $translation ) ) {
                 return false;

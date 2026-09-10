@@ -83,6 +83,20 @@ class TRP_LLM_Chunk_Runner {
         $engine  = $context['engine'];
         $attempt = self::RUNG_DERIVED === $rung ? 0 : 1;
 
+        // Every rung is a new paid request. The outer engine loop cannot enforce
+        // these limits between recursive retries or between the two halves.
+        if ( array() === $chunk || $logger->quota_exceeded() ) {
+            return array();
+        }
+
+        if ( '' !== TRP_LLM_Engine_Cooldown::active( $engine ) ) {
+            if ( TRP_LLM_Engine_Cooldown::note_skip( $engine ) ) {
+                TRP_LLM_Response_Normalizer::log_chunk_failure( $engine, 'cooldown', count( $chunk ), 0, '' );
+            }
+
+            return array();
+        }
+
         // The budget was checked before retries and before escalations and never
         // before the first send, which is the one that always happens. Every cURL
         // 28 in trp_llm_http_failures entered here with a budget that could not
@@ -108,6 +122,7 @@ class TRP_LLM_Chunk_Runner {
         // line here or a site filter downstream, would have been told every
         // escalated send was a first send.
         $context['attempt'] = $attempt;
+        $context['strings'] = array_values( $chunk );
 
         $response = TRP_LLM_Request_Retry::send(
             function () use ( $sender, $chunk, $attempt ) {
@@ -137,6 +152,33 @@ class TRP_LLM_Chunk_Runner {
 
         $content = TRP_LLM_Request_Shape::message_content( $body );
 
+        // Refusals and tool hand-offs are not translations, even when their text
+        // happens to parse as a matching JSON array. Do not retry them inline.
+        $finish_reason = TRP_LLM_Request_Shape::finish_reason( $body );
+        $not_translation = array( 'content_filter', 'refusal', 'tool_calls', 'function_call', 'tool_use', 'pause_turn' );
+
+        if ( ! empty( $body['choices'][0]['message']['refusal'] ) || in_array( $finish_reason, $not_translation, true ) ) {
+            TRP_LLM_Response_Normalizer::log_chunk_failure( $engine, 'non-translation-response', count( $chunk ), 0, '' );
+
+            return array();
+        }
+
+        // A syntactically valid array is not proof that the provider finished.
+        // Treat even a matching-count answer as incomplete when the provider
+        // reports its token limit, including responses with no text at all.
+        if ( TRP_LLM_Request_Shape::was_truncated( $body ) ) {
+            return self::escalate(
+                $chunk,
+                $context,
+                $logger,
+                $mt_settings,
+                $sender,
+                $rung,
+                TRP_LLM_Response_Normalizer::parse( $content ),
+                null === $content ? '' : $content
+            );
+        }
+
         if ( null === $content ) {
             TRP_LLM_Response_Normalizer::log_chunk_failure(
                 $engine,
@@ -151,12 +193,9 @@ class TRP_LLM_Chunk_Runner {
 
         $translations = TRP_LLM_Response_Normalizer::parse( $content );
 
-        // A model that answered the whole chunk twice has given a usable answer and
-        // an echo of it. Production logged this as count-mismatch and threw both
-        // away, expected 1 received 2 and expected 1 received 4, with the last copy
-        // regularly cut mid word. trim_repetition() refuses anything it cannot
-        // prove is an echo, so the alternative reading, one source split across
-        // several elements, still falls through to the mismatch branch below.
+        // Recover exact repeated batches only after ruling out truncation.
+        // Similar or partial copies fall through to count-mismatch instead of
+        // being stored as though the first copy were known to be complete.
         if ( count( $translations ) > count( $chunk ) ) {
             $trimmed = TRP_LLM_Response_Normalizer::trim_repetition( $translations, count( $chunk ) );
 
@@ -167,10 +206,6 @@ class TRP_LLM_Chunk_Runner {
 
         if ( count( $translations ) === count( $chunk ) ) {
             return TRP_LLM_Placeholder_Guard::filter_chunk( $chunk, $translations, $engine );
-        }
-
-        if ( TRP_LLM_Request_Shape::was_truncated( $body ) ) {
-            return self::escalate( $chunk, $context, $logger, $mt_settings, $sender, $rung, $translations, $content );
         }
 
         // An answer that parsed to nothing and an answer with the wrong number of

@@ -149,11 +149,10 @@ class TRP_LLM_Response_Normalizer {
             return null;
         }
 
-        // Every element past the first copy has to match the element of the first
-        // copy it is echoing. Each is compared against the first copy rather than
-        // against the copy before it, because near_duplicate() is not transitive.
+        // Only exact copies are recoverable. Prefix, case and whitespace
+        // similarity cannot prove that an element is a complete translation.
         for ( $i = $expected; $i < $received; $i++ ) {
-            if ( ! self::near_duplicate( $list[ $i % $expected ], $list[ $i ] ) ) {
+            if ( ! self::exact_duplicate( $list[ $i % $expected ], $list[ $i ] ) ) {
                 return null;
             }
         }
@@ -162,42 +161,20 @@ class TRP_LLM_Response_Normalizer {
     }
 
     /**
-     * Whether one string is the same answer as another, or a cut off copy of it.
+     * Whether both elements are the same non-empty translation.
      *
-     * The prefix rule is what the production samples need. A repeated answer whose
-     * second copy ran out of output tokens is not equal to the first, it is a
-     * proper prefix of it, and that is the dominant shape in the log.
-     *
-     * Deliberately neither levenshtein(), which counts bytes and so misreads every
-     * accented language this site publishes, nor similar_text(), whose worst case
-     * is cubic and which would run on the render path.
+     * Prefix matching accepted ["Delete account", "Delete account now"]
+     * and kept the shorter first element. Even a long shared prefix can omit a
+     * negation or qualification. Do not normalize case or whitespace either:
+     * both can be meaningful in HTML, code and case-sensitive placeholders.
      *
      * @param mixed $a First element.
      * @param mixed $b Second element.
      *
      * @return bool
      */
-    private static function near_duplicate( $a, $b ) {
-        if ( ! is_string( $a ) || ! is_string( $b ) ) {
-            return false;
-        }
-
-        $a = mb_strtolower( trim( preg_replace( '/\s+/u', ' ', $a ) ) );
-        $b = mb_strtolower( trim( preg_replace( '/\s+/u', ' ', $b ) ) );
-
-        if ( '' === $a || '' === $b ) {
-            return false;
-        }
-
-        if ( mb_strlen( $a ) > mb_strlen( $b ) ) {
-            list( $a, $b ) = array( $b, $a );
-        }
-
-        // Two conditions doing two different jobs. The prefix test says what is
-        // present matches, the length ratio says not too much is missing. Prefix
-        // alone would accept two different catalogue titles that happen to share
-        // an opening word.
-        return mb_strlen( $a ) >= 0.6 * mb_strlen( $b ) && 0 === mb_strpos( $b, $a );
+    private static function exact_duplicate( $a, $b ) {
+        return is_string( $a ) && '' !== trim( $a ) && $a === $b;
     }
 
     /**
@@ -371,8 +348,13 @@ class TRP_LLM_Response_Normalizer {
                 $depth--;
 
                 if ( $depth < 0 ) {
-                    // Everything from here on closes something that was never
-                    // opened, so the document ends at the previous character.
+                    // Only discard surplus closers and whitespace, never another
+                    // value or explanatory prose after them. Otherwise a repair
+                    // could silently turn a multi-value answer into one string.
+                    if ( ! preg_match( '/^[\]\}\s]+$/D', substr( $content, $i ) ) ) {
+                        return $content;
+                    }
+
                     $cut = $i;
                     break;
                 }
@@ -444,16 +426,22 @@ class TRP_LLM_Response_Normalizer {
             }
         }
 
-        // An object keyed by position, for example {"1": "...", "2": "..."}.
-        // json_decode already collapses a zero based run into a list, so what
-        // arrives here is a run that starts elsewhere or skips a number.
+        // Only canonical, contiguous zero- or one-based positions are safe.
+        // Sorting arbitrary numeric keys and dropping them would shift a later
+        // translation into the slot of a missing source. Leading-zero keys can
+        // also alias a position and must not be guessed at.
         foreach ( array_keys( $decoded ) as $key ) {
-            if ( ! is_int( $key ) && ! ( is_string( $key ) && ctype_digit( $key ) ) ) {
+            if ( ! is_int( $key ) || $key < 0 ) {
                 return array();
             }
         }
 
         ksort( $decoded, SORT_NUMERIC );
+        $keys = array_keys( $decoded );
+
+        if ( $keys !== range( 0, count( $decoded ) - 1 ) && $keys !== range( 1, count( $decoded ) ) ) {
+            return array();
+        }
 
         return array_values( $decoded );
     }
