@@ -89,6 +89,6 @@ register_activation_hook( __FILE__, 'trp_llm_engines_activate' );
  * Plugin deactivation hook
  */
 function trp_llm_engines_deactivate() {
-    // Deactivation tasks if needed
+    wp_clear_scheduled_hook( 'trp_llm_housekeeping' );
 }
 register_deactivation_hook( __FILE__, 'trp_llm_engines_deactivate' );

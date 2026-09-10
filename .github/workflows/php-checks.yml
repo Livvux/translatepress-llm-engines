@@ -32,7 +32,9 @@ jobs:
       - name: PHP syntax
         run: find . -type f -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 php -l
       - name: Unit tests
-        run: php tests/run.php
+        run: |
+          php tests/run.php
+          php tests/reliability.php
       - name: Settings JavaScript syntax
         if: matrix.php == '8.4'
         run: node --check assets/js/trp-llm-engines-settings.js

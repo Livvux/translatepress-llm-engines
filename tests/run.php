@@ -312,13 +312,13 @@ $tests['runner: blank sibling remains retryable without discarding safe siblings
     } ) );
 };
 
-$tests['runner: enabled vendor log receives the actual request'] = static function () {
+$tests['runner: enabled vendor log receives metadata without raw source'] = static function () {
     $logger = new TRP_LLM_Test_Logger();
     trp_test_run_chunk( array( 7 => 'Hello' ), static function () {
         return trp_test_response( '["Hallo"]' );
     }, $logger, array( 'machine_translation_log' => 'yes' ) );
     trp_test_same( 1, count( $logger->logs ) );
-    trp_test_same( serialize( array( 7 => 'Hello' ) ), $logger->logs[0]['strings'] );
+    trp_test_same( serialize( array( '[redacted: 1 strings]' ) ), $logger->logs[0]['strings'] );
 };
 
 $failures = 0;

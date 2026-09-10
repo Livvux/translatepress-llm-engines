@@ -151,7 +151,11 @@ class TRP_LLM_Request_Retry {
                 return $response;
             }
 
-            $delay = self::retry_after_seconds( $response, $max_backoff );
+            $delay = self::retry_after_seconds( $response, PHP_INT_MAX );
+            if ( $delay > $max_backoff ) {
+                // The runner starts a cooldown carrying this full Retry-After.
+                return $response;
+            }
 
             // The retried request itself has to fit, not only the pause before
             // it. A retry that clears the sleep check and then blocks for its own
@@ -163,6 +167,9 @@ class TRP_LLM_Request_Retry {
 
             if ( $delay > 0 ) {
                 sleep( $delay );
+            }
+            if ( ! self::send_is_worthwhile() ) {
+                return $response;
             }
         }
     }

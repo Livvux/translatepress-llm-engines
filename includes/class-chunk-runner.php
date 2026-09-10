@@ -64,7 +64,13 @@ class TRP_LLM_Chunk_Runner {
      *               again rather than being stored wrong.
      */
     public static function run( array $chunk, array $context, $logger, array $mt_settings, $sender ) {
-        return self::attempt( $chunk, $context, $logger, $mt_settings, $sender, self::RUNG_DERIVED );
+        return TRP_LLM_Translation_State::run( $chunk, $context, $mt_settings, $sender,
+            static function ( $pending, $guarded_sender ) use ( $context, $logger, $mt_settings ) {
+                $failed = array();
+                $translations = self::attempt( $pending, $context, $logger, $mt_settings, $guarded_sender, self::RUNG_DERIVED, $failed );
+                return array( 'translations' => $translations, 'failed' => $failed );
+            }
+        );
     }
 
     /**
@@ -79,7 +85,7 @@ class TRP_LLM_Chunk_Runner {
      *
      * @return array
      */
-    private static function attempt( array $chunk, array $context, $logger, array $mt_settings, $sender, $rung ) {
+    private static function attempt( array $chunk, array $context, $logger, array $mt_settings, $sender, $rung, array &$failed ) {
         $engine  = $context['engine'];
         $attempt = self::RUNG_DERIVED === $rung ? 0 : 1;
 
@@ -130,6 +136,12 @@ class TRP_LLM_Chunk_Runner {
             }
         );
 
+        if ( is_wp_error( $response ) && 0 === strpos( $response->get_error_code(), 'trp_llm_' ) ) {
+            // Local configuration/storage failures are not provider outages.
+            TRP_LLM_Response_Normalizer::log_chunk_failure( $engine, $response->get_error_code(), count( $chunk ), 0, '' );
+            return array();
+        }
+
         self::log_request( $logger, $mt_settings, $chunk, $response, $context );
 
         $reason = TRP_LLM_Http_Failure_Log::record( $engine, $context['model'], $context['target_language'], $response );
@@ -145,6 +157,9 @@ class TRP_LLM_Chunk_Runner {
         // wrong shaped answer was billed by the provider and counted by nobody.
         // On 2026-08-17 that hid 44 paid batches from the quota in three minutes.
         $logger->count_towards_quota( $chunk );
+        // Only a paid HTTP-success response creates content-failure backoff.
+        // Successful keys override this below in the state coordinator.
+        $failed += array_fill_keys( array_keys( $chunk ), true );
 
         $body = json_decode( wp_remote_retrieve_body( $response ), true );
 
@@ -175,7 +190,8 @@ class TRP_LLM_Chunk_Runner {
                 $sender,
                 $rung,
                 TRP_LLM_Response_Normalizer::parse( $content ),
-                null === $content ? '' : $content
+                null === $content ? '' : $content,
+                $failed
             );
         }
 
@@ -253,7 +269,7 @@ class TRP_LLM_Chunk_Runner {
      *
      * @return array
      */
-    private static function escalate( array $chunk, array $context, $logger, array $mt_settings, $sender, $rung, $translations, $content ) {
+    private static function escalate( array $chunk, array $context, $logger, array $mt_settings, $sender, $rung, $translations, $content, array &$failed ) {
         TRP_LLM_Response_Normalizer::log_chunk_failure(
             $context['engine'],
             self::RUNG_REASONS[ $rung ],
@@ -266,7 +282,7 @@ class TRP_LLM_Chunk_Runner {
         // entrance and answers it the same way, and it also writes the
         // budget-spent breadcrumb that a guard at this level would swallow.
         if ( self::RUNG_DERIVED === $rung ) {
-            return self::attempt( $chunk, $context, $logger, $mt_settings, $sender, self::RUNG_MAX );
+            return self::attempt( $chunk, $context, $logger, $mt_settings, $sender, self::RUNG_MAX, $failed );
         }
 
         if ( self::RUNG_HALVED === $rung || count( $chunk ) < 2 ) {
@@ -277,7 +293,7 @@ class TRP_LLM_Chunk_Runner {
         $recovered = array();
 
         foreach ( $halves as $half ) {
-            $recovered += self::attempt( $half, $context, $logger, $mt_settings, $sender, self::RUNG_HALVED );
+            $recovered += self::attempt( $half, $context, $logger, $mt_settings, $sender, self::RUNG_HALVED, $failed );
         }
 
         return $recovered;
@@ -304,9 +320,20 @@ class TRP_LLM_Chunk_Runner {
             return;
         }
 
+        if ( ! apply_filters( 'trp_llm_diagnostics_enabled', true ) ) {
+            return;
+        }
+        $body = json_decode( wp_remote_retrieve_body( $response ), true );
+        $strings = array( '[redacted: ' . count( $chunk ) . ' strings]' );
+        if ( apply_filters( 'trp_llm_diagnostic_content', false ) ) {
+            $strings = array_map( array( 'TRP_LLM_Breadcrumb', 'excerpt' ), array_values( $chunk ) );
+        }
         $logger->log( array(
-            'strings'     => serialize( $chunk ),
-            'response'    => serialize( $response ),
+            'strings' => serialize( $strings ),
+            'response' => serialize( array(
+                'http' => (int) wp_remote_retrieve_response_code( $response ),
+                'finish_reason' => TRP_LLM_Request_Shape::finish_reason( $body ),
+            ) ),
             'lang_source' => $context['source_language'],
             'lang_target' => $context['target_language'],
         ) );

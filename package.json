@@ -1,0 +1,6 @@
+{
+  "name": "translatepress-llm-engines-tests",
+  "private": true,
+  "scripts": { "test": "node --test tests/js/*.test.cjs" },
+  "devDependencies": { "jquery": "3.7.1", "jsdom": "26.1.0" }
+}

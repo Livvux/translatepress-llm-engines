@@ -17,6 +17,31 @@ set_error_handler( static function ( $severity, $message, $file, $line ) {
     throw new ErrorException( $message, 0, $severity, $file, $line );
 } );
 
+function apply_filters( $name, $value, ...$args ) {
+    return $value;
+}
+
+function is_wp_error( $value ) {
+    return $value instanceof WP_Error;
+}
+
+class WP_Error {
+    private $code;
+    public function __construct( $code ) { $this->code = $code; }
+    public function get_error_code() { return $this->code; }
+}
+
+function wp_remote_retrieve_response_code( $response ) {
+    return $response['response']['code'] ?? 0;
+}
+
+// Runner unit tests isolate storage; real state is tested with MariaDB in integration/.
+class TRP_LLM_Translation_State {
+    public static function run( $chunk, $context, $settings, $sender, $worker ) {
+        return $worker( $chunk, $sender )['translations'];
+    }
+}
+
 function wp_remote_retrieve_body( $response ) {
     return $response['body'] ?? '';
 }
