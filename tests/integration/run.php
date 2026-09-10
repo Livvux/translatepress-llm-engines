@@ -71,11 +71,16 @@ $wpdb->update( $dictionary, array( 'translated' => 'Human approved', 'status' =>
 $renderer->process_strings( array( 'Hello %s' ), 'de_DE' );
 $reviewed = $query->get_existing_translations( array( 'Hello %s' ), 'de_DE' );
 expect( $reviewed['Hello %s']->translated === 'Human approved' && $GLOBALS['fixture_calls'] === 2, 'existing human-reviewed translation unchanged' );
+// Simulate elapsed time in BOTH independent TTL layers. TP keeps a 50-second
+// recently-translated marker for the entire partially saved batch.
+$vendor_locks = $query->get_table_name_for_machine_translation_locks();
+$wpdb->query( "UPDATE {$vendor_locks} SET updated_at=DATE_SUB(UTC_TIMESTAMP(), INTERVAL 120 SECOND)" );
 $wpdb->query( "UPDATE {$state} SET retry_at=0 WHERE failures>0" );
+unset( $GLOBALS['trp_machine_translation_deadline'] );
 $GLOBALS['fixture_mode'] = 'success';
 $renderer->process_strings( array( 'Broken content' ), 'de_DE' );
 $rows = $query->get_existing_translations( array( 'Broken content' ), 'de_DE' );
-expect( $rows['Broken content']->translated === 'DE: Broken content', 'expired backoff retries and persists successfully' );
+expect( isset( $rows['Broken content'] ) && $rows['Broken content']->translated === 'DE: Broken content', 'expired backoff retries and persists successfully' );
 expect( 0 === (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$state} WHERE failures>0" ), 'successful retry resets failures' );
 // Explicitly prevent one save to exercise the engine-return / dictionary-write gap.
 reset_fixture();
