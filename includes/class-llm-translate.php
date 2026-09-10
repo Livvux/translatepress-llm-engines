@@ -594,8 +594,12 @@ class TRP_LLM_Translate {
             $before = isset( $existing[ $key ] ) ? $existing[ $key ] : '';
             $after  = isset( $settings[ $key ] ) ? $settings[ $key ] : '';
 
-            if ( $before !== $after ) {
+            $model = $engine . '-model';
+            if ( $before !== $after || ( $existing[ $model ] ?? '' ) !== ( $settings[ $model ] ?? '' ) ) {
+                // Correcting an unavailable model must also unblock the next request.
                 TRP_LLM_Engine_Cooldown::clear( $engine );
+            }
+            if ( $before !== $after ) {
                 delete_transient( TRP_LLM_Key_Verdict::key( $engine, $before ) );
 
                 // The model list is cached for a day and keyed by the old key, so

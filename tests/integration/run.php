@@ -53,6 +53,8 @@ $renderer = $trp->get_component( 'translation_render' );
 $settings = $trp->get_component( 'settings' )->get_settings();
 expect( $engine instanceof TRP_OpenAI_Machine_Translator, 'plugin boot registers real OpenAI engine' );
 expect( TRP_LLM_Storage::ensure(), 'upgrade installs state and cost tables' );
+$housekeeping = wp_get_scheduled_event( 'trp_llm_housekeeping' );
+expect( $housekeeping && 'hourly' === $housekeeping->schedule && 3600 === $housekeeping->interval, 'housekeeping is scheduled hourly' );
 $state = TRP_LLM_Storage::table( 'state' ); $costs = TRP_LLM_Storage::table( 'costs' );
 $query->check_original_table();
 $query->check_original_meta_table();
@@ -227,7 +229,7 @@ add_filter( 'pre_option_trp_llm_cost_daily', array( 'TRP_LLM_Cost_Ledger', 'lega
 $live = TRP_LLM_Translation_State::claim( hash( 'sha256', 'live-cleanup' ) );
 $wpdb->query( "UPDATE {$state} SET expires_at=0" );
 $wpdb->query( "INSERT INTO {$costs} VALUES ('2000-01-01','openai','reported',1,1)" );
-TRP_LLM_Storage::cleanup();
+do_action( 'trp_llm_housekeeping' );
 expect( 1 === (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$state}" ), 'cleanup preserves live lease' );
 expect( 0 === (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$costs} WHERE day='2000-01-01'" ), 'expired cost rows removed' );
 // Storage unavailable => fail closed, never silently buy an unlocked translation.
@@ -237,4 +239,30 @@ $result = $engine->translate_array( array( 'Unavailable state storage' ), 'de_DE
 $wpdb->suppress_errors( false );
 $wpdb->query( "RENAME TABLE {$state}_offline TO {$state}" );
 expect( array() === $result && $GLOBALS['fixture_calls'] === $before, 'unavailable state storage sends no paid request' );
+// Expiry is logical even when housekeeping has not physically removed a row.
+reset_fixture();
+$id = hash( 'sha256', 'expired-failure-retention' );
+$claim = TRP_LLM_Translation_State::claim( $id );
+TRP_LLM_Translation_State::finish( $id, $claim, null, true );
+$wpdb->query( $wpdb->prepare( "UPDATE {$state} SET failures=10,retry_at=0,expires_at=UNIX_TIMESTAMP()-1 WHERE fingerprint=%s", $id ) );
+$claim = TRP_LLM_Translation_State::claim( $id );
+expect( 'acquired' === $claim['status'] && 0 === $claim['failures'], 'expired failure history resets without housekeeping' );
+TRP_LLM_Translation_State::finish( $id, $claim, null, true );
+$row = $wpdb->get_row( $wpdb->prepare( "SELECT failures,retry_at-UNIX_TIMESTAMP() AS delay FROM {$state} WHERE fingerprint=%s", $id ), ARRAY_A );
+expect( 1 === (int) $row['failures'] && (int) $row['delay'] <= 66, 'failure after retention expiry starts at the initial backoff' );
+$wpdb->query( $wpdb->prepare( "UPDATE {$state} SET retry_at=0 WHERE fingerprint=%s", $id ) );
+$claim = TRP_LLM_Translation_State::claim( $id );
+expect( 1 === $claim['failures'], 'unexpired failure history survives a new claim' );
+TRP_LLM_Translation_State::release( $id, $claim['owner'] );
+// Model correction is an explicit configuration change, independent of key rotation.
+$existing = array( 'openrouter-api-key' => 'integration-not-real', 'openrouter-model' => 'old-model' );
+set_transient( 'trp_llm_cooldown_openrouter', 'http-4xx', 300 );
+TRP_LLM_Translate::forget_stale_state( $existing, $existing );
+expect( 'http-4xx' === TRP_LLM_Engine_Cooldown::active( 'openrouter' ), 'unchanged settings preserve provider cooldown' );
+$cache_key = TRP_OpenRouter_Machine_Translator::models_transient_key( $existing['openrouter-api-key'] );
+set_transient( $cache_key, array( 'catalogue' => 'unchanged' ), HOUR_IN_SECONDS );
+$changed = array_replace( $existing, array( 'openrouter-model' => 'corrected-model' ) );
+TRP_LLM_Translate::forget_stale_state( $changed, $existing );
+expect( '' === TRP_LLM_Engine_Cooldown::active( 'openrouter' ), 'corrected model clears obsolete provider cooldown' );
+expect( array( 'catalogue' => 'unchanged' ) === get_transient( $cache_key ), 'model correction preserves the same credential catalogue cache' );
 WP_CLI::success( "$checks integration assertions; WordPress " . get_bloginfo( 'version' ) . '; TranslatePress ' . TRP_PLUGIN_VERSION );

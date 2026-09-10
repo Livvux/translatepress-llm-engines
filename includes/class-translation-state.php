@@ -75,8 +75,10 @@ class TRP_LLM_Translation_State {
             TRP_LLM_Storage::error( 'claim' );
             return array( 'status' => 'error' );
         }
+        // Reset expired history before extending expires_at; housekeeping may be delayed.
         $claimed = $wpdb->query( $wpdb->prepare(
             "UPDATE {$table} SET owner=%s, lease_until=UNIX_TIMESTAMP()+%d, result=NULL, result_until=0,
+                failures=IF(expires_at<=UNIX_TIMESTAMP(),0,failures),
                 expires_at=GREATEST(expires_at,UNIX_TIMESTAMP()+%d)
              WHERE fingerprint=%s AND lease_until<=UNIX_TIMESTAMP() AND retry_at<=UNIX_TIMESTAMP()
                 AND (result IS NULL OR result_until<=UNIX_TIMESTAMP())", $owner, $ttl, $ttl, $fingerprint
