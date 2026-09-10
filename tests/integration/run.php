@@ -21,12 +21,20 @@ function parallel_workers( $mode ) {
     $workers = array();
     for ( $i = 0; $i < 8; $i++ ) {
         $log = $gate . '-' . $i . '.log';
-        $command = 'LLM_TEST_MODE=' . escapeshellarg( $mode ) . ' LLM_TEST_GATE=' . escapeshellarg( $gate ) . ' wp eval-file ' . escapeshellarg( __DIR__ . '/worker.php' ) . ' --path=' . escapeshellarg( ABSPATH );
+        $command = 'LLM_TEST_MODE=' . escapeshellarg( $mode ) . ' LLM_TEST_GATE=' . escapeshellarg( $gate ) . ' LLM_TEST_WORKER=' . $i . ' wp eval-file ' . escapeshellarg( __DIR__ . '/worker.php' ) . ' --path=' . escapeshellarg( ABSPATH );
         $process = proc_open( $command, array( 0 => array( 'file', '/dev/null', 'r' ), 1 => array( 'file', $log, 'w' ), 2 => array( 'file', $log, 'a' ) ), $pipes );
         if ( ! is_resource( $process ) ) { throw new RuntimeException( 'Could not launch worker.' ); }
         $workers[] = array( $process, $log );
     }
-    // All workers can reach the provider concurrently; none uses the parent's SQL connection.
+    // Release the barrier only after ALL independent WordPress processes booted.
+    // Touching the gate immediately after proc_open would also pass serial execution.
+    $deadline = microtime( true ) + 20;
+    do {
+        clearstatcache();
+        $all_ready = count( glob( $gate . '.ready-*' ) ) === count( $workers );
+        if ( $all_ready ) { break; }
+        usleep( 10000 );
+    } while ( microtime( true ) < $deadline );
     touch( $gate );
     foreach ( $workers as list( $process, $log ) ) {
         $status = proc_close( $process );
@@ -34,7 +42,9 @@ function parallel_workers( $mode ) {
         expect( 0 === $status, $mode . ' worker exits successfully' );
         unlink( $log );
     }
+    foreach ( glob( $gate . '.ready-*' ) as $ready ) { unlink( $ready ); }
     unlink( $gate );
+    expect( $all_ready, $mode . ' workers all reach the start barrier' );
 }
 $trp = TRP_Translate_Press::get_trp_instance();
 $engine = $trp->get_component( 'machine_translator' );
@@ -119,6 +129,45 @@ expect( 'locked' === TRP_LLM_Translation_State::claim( $id )['status'], 'stale o
 expect( ! TRP_LLM_Translation_State::renew( $id, $a['owner'] ), 'stale owner cannot renew' );
 TRP_LLM_Translation_State::finish( $id, $b, 'safe result', false );
 expect( TRP_LLM_Translation_State::claim( $id )['result'] === 'safe result', 'successful result handoff visible across SQL reads' );
+// Fence the coordinator's RETURN path, not only the state-table update.
+// Simulate a worker pause during provider HTTP, then let the real renderer save.
+foreach ( array( 'expired', 'reclaimed', 'storage-error' ) as $lease_mode ) {
+    reset_fixture();
+    $source = 'Lease completion regression ' . $lease_mode;
+    $successor = bin2hex( random_bytes( 16 ) );
+    $intercept = static function ( $response, $args ) use ( $wpdb, $state, $lease_mode, $successor ) {
+        if ( 'POST' !== ( $args['method'] ?? 'GET' ) ) { return $response; }
+        if ( 'storage-error' === $lease_mode ) {
+            $wpdb->query( "RENAME TABLE {$state} TO {$state}_handoff_offline" );
+        } elseif ( 'reclaimed' === $lease_mode ) {
+            $wpdb->query( $wpdb->prepare( "UPDATE {$state} SET owner=%s,lease_until=UNIX_TIMESTAMP()+120", $successor ) );
+        } else {
+            $wpdb->query( "UPDATE {$state} SET lease_until=UNIX_TIMESTAMP()-1" );
+        }
+        return $response;
+    };
+    // Same priority, registered after the fixture: mutate ownership after its response.
+    add_filter( 'pre_http_request', $intercept, PHP_INT_MAX, 2 );
+    $previous_errors = $wpdb->suppress_errors( 'storage-error' === $lease_mode );
+    try {
+        $renderer->process_strings( array( $source ), 'de_DE' );
+    } finally {
+        remove_filter( 'pre_http_request', $intercept, PHP_INT_MAX );
+        if ( 'storage-error' === $lease_mode ) {
+            $wpdb->query( "RENAME TABLE {$state}_handoff_offline TO {$state}" );
+        }
+        $wpdb->suppress_errors( $previous_errors );
+    }
+    $rows = $query->get_string_rows( array(), array( $source ), 'de_DE', OBJECT );
+    $row = $rows ? reset( $rows ) : null;
+    expect( $row && (int) $row->status === $query->get_constant_not_translated() && empty( $row->translated ), $lease_mode . ' outcome not persisted by real TranslatePress' );
+    expect( $GLOBALS['fixture_calls'] === 1, $lease_mode . ' does not retry the paid response inline' );
+    expect( 1 === (int) $wpdb->get_var( "SELECT SUM(responses) FROM {$costs}" ), $lease_mode . ' still accounts for the received response' );
+    expect( 0 === (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$state} WHERE result IS NOT NULL" ), $lease_mode . ' does not publish an uncommitted handoff' );
+    if ( 'reclaimed' === $lease_mode ) {
+        expect( $wpdb->get_var( "SELECT owner FROM {$state} LIMIT 1" ) === $successor, 'coordinator finally preserves successor ownership' );
+    }
+}
 // An exception while claiming a later string must release earlier claims.
 reset_fixture();
 $throw_filter = static function ( $v, $ctx ) { if ( in_array( 'Throw while fingerprinting', $ctx['strings'], true ) ) { throw new RuntimeException( 'fixture' ); } return $v; };

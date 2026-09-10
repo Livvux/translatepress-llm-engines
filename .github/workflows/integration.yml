@@ -57,7 +57,7 @@ jobs:
       - name: JavaScript DOM regression tests
         if: always()
         run: |
-          npm install --ignore-scripts --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund
           npm test
       - name: Source fixture for reproducibility
         if: always()

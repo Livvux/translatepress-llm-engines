@@ -30,7 +30,7 @@ Default content backoff is 60 seconds, then 120, 240, and so on, capped at 24 ho
 | `trp_llm_lease_seconds` | 120 seconds; never shorter than the configured request timeout plus 30 seconds |
 | `trp_llm_result_handoff_seconds` | 60 seconds, clamped to 1–300 seconds |
 
-Claims use a unique database key and conditional SQL updates, not a transient or an object-cache get/set pair. Only the current random owner may renew, finish or release a lease. A stale worker cannot release a successor's lease. Each outgoing HTTP attempt renews the required leases, including transport retries and split chunks. Cleanup runs in `finally`, including exceptions while acquiring later strings.
+Claims use a unique database key and conditional SQL updates, not a transient or an object-cache get/set pair. Only the current random owner may renew, finish or release a lease. A stale worker cannot release a successor's lease or return an uncommitted translation to TranslatePress. Only a successful owner-fenced handoff write makes a translation eligible for dictionary persistence; expired/reclaimed leases and failed state writes leave it pending. Each outgoing HTTP attempt renews the required leases, including transport retries and split chunks. Cleanup runs in `finally`, including exceptions while acquiring later strings.
 
 A successful translation is temporarily cached to cover the interval between the engine returning and TranslatePress committing its dictionary row. It can be reused during that interval without another provider request. The result is plaintext in the plugin's state table while retained. It expires logically after the handoff interval and is physically removed by housekeeping later; it is not a permanent translation cache.
 
@@ -125,9 +125,9 @@ wp cron event run trp_llm_housekeeping
 
 ## Verification scope
 
-`php tests/run.php` covers the existing parser, placeholder guard and chunk-runner contracts with collaborators doubled. `php tests/reliability.php` exercises the actual capability, pricing, fingerprint, retry, typed-content and redaction policy classes with WordPress/HTTP I/O doubles. `npm test` runs the settings script against real jQuery in a jsdom DOM.
+`php tests/run.php` covers the existing parser, placeholder guard and chunk-runner contracts with collaborators doubled. `php tests/reliability.php` exercises the actual capability, pricing, fingerprint, retry, typed-content and redaction policy classes with WordPress/HTTP I/O doubles. `npm ci --ignore-scripts` installs the committed test dependency lockfile. `npm test` runs the settings script against real jQuery in a jsdom DOM.
 
-The integration workflow provisions disposable WordPress 7.1, TranslatePress 3.3.5 and MariaDB 10.11. Its tests use the actual plugin lifecycle, renderer, query API, dictionary persistence and vendor logger. Separate WordPress processes contend for the same translation and increment the shared cost ledger. Only provider HTTP is intercepted by a test-only fixture; there are no real API keys or paid provider calls. A defined test suite or configured workflow is not evidence of passing execution; consult the checks on the exact PR commit.
+The integration workflow provisions disposable WordPress 7.1, TranslatePress 3.3.5 and MariaDB 10.11. Its tests use the actual plugin lifecycle, renderer, query API, dictionary persistence and vendor logger. Eight separate WordPress processes wait at a readiness barrier before contending for the same translation or incrementing the shared cost ledger. Additional renderer-level cases verify that expired/reclaimed leases and a failed handoff write cannot persist a stale result, while the received provider response is still counted. Only provider HTTP is intercepted by a test-only fixture; there are no real API keys or paid provider calls. A defined test suite or configured workflow is not evidence of passing execution; consult the checks on the exact PR commit.
 
 The fixture is guarded by both `WP_CLI` and `TRP_LLM_INTEGRATION_TESTS`. Never install it on a production site. These tests do not establish support for every WordPress/TranslatePress version or real-world translation quality.
 
@@ -136,6 +136,7 @@ The fixture is guarded by both `WP_CLI` and `TRP_LLM_INTEGRATION_TESTS`. Never i
 Registry review date: 2026-09-10. Exact identifiers and their contracts should be rechecked when extending the registry.
 
 - [OpenAI Chat Completions reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+- [OpenAI standard API pricing](https://developers.openai.com/api/docs/pricing)
 - [OpenAI model catalogue](https://developers.openai.com/api/docs/models)
 - [GPT-5 developer parameters and pricing](https://openai.com/index/introducing-gpt-5-for-developers/)
 - [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing)

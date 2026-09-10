@@ -120,6 +120,7 @@ class TRP_LLM_Translation_State {
         ) );
     }
 
+    /** Return true only when the current owner committed its outcome. */
     public static function finish( $fingerprint, array $claim, $translation, $failed ) {
         global $wpdb;
         $table = TRP_LLM_Storage::table( 'state' );
@@ -142,11 +143,15 @@ class TRP_LLM_Translation_State {
                 $delay, $retention, $fingerprint, $claim['owner']
             );
         } else {
-            return;
+            return false;
         }
-        if ( false === $wpdb->query( $sql ) ) {
+        $updated = $wpdb->query( $sql );
+        if ( false === $updated ) {
             TRP_LLM_Storage::error( 'finish' );
         }
+        // The owner is cleared on every commit, so success always changes one row.
+        // Zero means the lease expired or a successor took ownership.
+        return 1 === $updated;
     }
 
     /** The worker returns translations plus keys with an observed paid content failure. */
@@ -191,9 +196,13 @@ class TRP_LLM_Translation_State {
                 foreach ( $send as $key => $source ) {
                     $id = $keys[ $key ];
                     $translation = $outcome['translations'][ $key ] ?? null;
-                    self::finish( $id, $claims[ $id ], $translation, isset( $outcome['failed'][ $key ] ) );
-                    if ( is_string( $translation ) ) {
+                    $committed = self::finish( $id, $claims[ $id ], $translation, isset( $outcome['failed'][ $key ] ) );
+                    if ( is_string( $translation ) && $committed ) {
                         $ready[ $id ] = $translation;
+                    } elseif ( is_string( $translation ) ) {
+                        // Fence the return path too: TP will persist whatever we return.
+                        // A lost lease or failed handoff write must leave this key pending.
+                        self::note( $context['engine'], 'uncommitted-result' );
                     }
                 }
             }

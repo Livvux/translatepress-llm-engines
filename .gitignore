@@ -28,7 +28,6 @@ wp-content/uploads/backups/
 # Node modules (if added later)
 # =====================================
 node_modules/
-package-lock.json
 pnpm-lock.yaml
 
 # Environment files

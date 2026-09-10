@@ -3,12 +3,16 @@
 if ( ! defined( 'TRP_LLM_INTEGRATION_TESTS' ) || ! TRP_LLM_INTEGRATION_TESTS || ! defined( 'WP_CLI' ) || ! WP_CLI ) { exit( 1 ); }
 $mode = getenv( 'LLM_TEST_MODE' );
 $gate = getenv( 'LLM_TEST_GATE' );
-$deadline = microtime( true ) + 20;
+$worker = getenv( 'LLM_TEST_WORKER' );
+if ( ! is_string( $gate ) || '' === $gate || ! ctype_digit( (string) $worker ) ) { WP_CLI::error( 'Invalid barrier configuration.' ); }
+if ( ! touch( $gate . '.ready-' . $worker ) ) { WP_CLI::error( 'Could not announce readiness.' ); }
+$deadline = microtime( true ) + 30;
 while ( ! file_exists( $gate ) && microtime( true ) < $deadline ) { usleep( 10000 ); clearstatcache( true, $gate ); }
 if ( ! file_exists( $gate ) ) { WP_CLI::error( 'Barrier timed out.' ); }
 if ( 'cost' === $mode ) {
     for ( $i = 0; $i < 50; $i++ ) {
-        if ( ! TRP_LLM_Cost_Ledger::record( 'openrouter', array( 'usage' => array( 'cost' => '0.01' ) ) ) ) { WP_CLI::error( 'Cost write failed.' ); }
+        $written = TRP_LLM_Cost_Ledger::record( 'openrouter', array( 'usage' => array( 'cost' => '0.01' ) ) );
+        if ( ! $written ) { WP_CLI::error( 'Cost write failed.' ); }
     }
 } elseif ( 'race' === $mode ) {
     $GLOBALS['fixture_mode'] = 'race';
