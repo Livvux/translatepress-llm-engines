@@ -47,7 +47,11 @@ jobs:
           cp tests/integration/http-fixture.php /tmp/wordpress/wp-content/mu-plugins/llm-http-fixture.php
           wp option update trp_settings '{"default-language":"en_US","translation-languages":["en_US","de_DE"],"publish-languages":["en_US","de_DE"],"url-slugs":{"en_US":"en","de_DE":"de"}}' --format=json --path=/tmp/wordpress
           wp option update trp_machine_translation_settings '{"machine-translation":"yes","translation-engine":"openai","openai-model":"gpt-4o-mini","openai-api-key":"integration-not-real","machine_translation_log":"yes","machine_translation_limit":1000000}' --format=json --path=/tmp/wordpress
-          wp plugin activate translatepress-multilingual translatepress-llm-engines --path=/tmp/wordpress
+          # TranslatePress exits after its activation redirect; use separate CLI invocations.
+          wp plugin activate translatepress-multilingual --path=/tmp/wordpress
+          wp plugin activate translatepress-llm-engines --path=/tmp/wordpress
+          wp plugin is-active translatepress-multilingual --path=/tmp/wordpress
+          wp plugin is-active translatepress-llm-engines --path=/tmp/wordpress
       - name: Integration tests
         run: wp eval-file "$GITHUB_WORKSPACE/tests/integration/run.php" --path=/tmp/wordpress
       - name: JavaScript DOM regression tests
