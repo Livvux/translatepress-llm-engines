@@ -281,16 +281,125 @@ $tests['runner: refusal field overrides a matching array and stop reason'] = sta
     } ) );
 };
 
-$tests['runner: count mismatch is charged but not returned or retried'] = static function () {
+$tests['runner: count mismatch on a single string is charged but not retried'] = static function () {
     $logger = new TRP_LLM_Test_Logger();
     $calls = 0;
-    trp_test_same( array(), trp_test_run_chunk( array( 'A', 'B' ), static function () use ( &$calls ) {
+    trp_test_same( array(), trp_test_run_chunk( array( 'A' ), static function () use ( &$calls ) {
         ++$calls;
-        return trp_test_response( '["Only one"]' );
+        return trp_test_response( '["one","two"]' );
     }, $logger ) );
     trp_test_same( 1, $calls );
     trp_test_same( 1, count( $logger->charged ) );
     trp_test_same( 'count-mismatch', TRP_LLM_Breadcrumb::$entries['trp_llm_chunk_failures'][0]['reason'] );
+};
+
+$tests['runner: count mismatch isolates the unusable string and keeps the rest'] = static function () {
+    $logger = new TRP_LLM_Test_Logger();
+    $sent = array();
+    $result = trp_test_run_chunk( array( 3 => 'A', 7 => 'B', 9 => 'C' ), static function ( $part ) use ( &$sent ) {
+        $sent[] = array_values( $part );
+
+        // B is the string this model cannot count. Any batch carrying it comes
+        // back one element short; any batch without it is well formed.
+        if ( in_array( 'B', $part, true ) ) {
+            return trp_test_response( json_encode( array_fill( 0, max( 1, count( $part ) - 1 ), 'DE' ) ) );
+        }
+
+        return trp_test_response( json_encode( array_fill( 0, count( $part ), 'DE' ) ) );
+    }, $logger );
+
+    // Sorted before comparing: recovery order follows the queue, which visits
+    // the second half before the re-split halves of the first, and the order
+    // strings are recovered in is not something callers should depend on.
+    ksort( $result );
+    trp_test_same( array( 3 => 'DE', 9 => 'DE' ), $result );
+    // Four sends for a three string chunk: the batch, its two halves, and the
+    // re-split first half until the allowance of three fragments runs out. B is
+    // never asked alone, and does not need to be -- it is the string the model
+    // cannot answer for, and it stays at status 0 either way.
+    trp_test_same( array( array( 'A', 'B', 'C' ), array( 'A', 'B' ), array( 'C' ), array( 'A' ) ), $sent );
+};
+
+$tests['runner: isolation is bounded by the request allowance'] = static function () {
+    $calls = 0;
+    $filter = static function () {
+        return 1;
+    };
+    add_filter( 'trp_llm_mismatch_split_requests', $filter );
+    try {
+        trp_test_same( array(), trp_test_run_chunk( array( 'A', 'B', 'C', 'D' ), static function () use ( &$calls ) {
+            ++$calls;
+            return trp_test_response( '["one"]' );
+        } ) );
+    } finally {
+        remove_filter( 'trp_llm_mismatch_split_requests', $filter );
+    }
+
+    // One full batch plus the single fragment the allowance paid for.
+    trp_test_same( 2, $calls );
+};
+
+$tests['runner: a waiting render gets the smaller allowance'] = static function () {
+    $calls = 0;
+    // Any finite budget means a visitor is waiting, whatever the number is;
+    // send_is_worthwhile() is what decides whether there is time for one more.
+    TRP_LLM_Request_Retry::$budget = 9.5;
+    trp_test_same( array(), trp_test_run_chunk( array( 'A', 'B', 'C', 'D', 'E', 'F' ), static function () use ( &$calls ) {
+        ++$calls;
+        return trp_test_response( '["one"]' );
+    } ) );
+
+    // The batch, then two fragments, rather than the six an off-render caller
+    // would have been allowed.
+    trp_test_same( 3, $calls );
+};
+
+$tests['runner: isolation can be switched off'] = static function () {
+    $calls = 0;
+    add_filter( 'trp_llm_split_on_mismatch', '__return_false' );
+    try {
+        trp_test_same( array(), trp_test_run_chunk( array( 'A', 'B' ), static function () use ( &$calls ) {
+            ++$calls;
+            return trp_test_response( '["Only one"]' );
+        } ) );
+    } finally {
+        remove_filter( 'trp_llm_split_on_mismatch', '__return_false' );
+    }
+
+    trp_test_same( 1, $calls );
+    trp_test_same( 'count-mismatch', TRP_LLM_Breadcrumb::$entries['trp_llm_chunk_failures'][0]['reason'] );
+};
+
+$tests['runner: an isolation pass writes one failure line, not one per fragment'] = static function () {
+    $calls = 0;
+    // One element too many at every size, and never an exact repetition, so the
+    // count never matches and trim_repetition() cannot rescue a fragment either.
+    trp_test_same( array(), trp_test_run_chunk( array( 'A', 'B', 'C', 'D' ), static function ( $part ) use ( &$calls ) {
+        ++$calls;
+        $answer = array();
+        for ( $i = 0; $i <= count( $part ); $i++ ) {
+            $answer[] = 'DE' . $i;
+        }
+
+        return trp_test_response( json_encode( $answer ) );
+    } ) );
+
+    // The whole batch, then four fragments, which is the allowance.
+    trp_test_same( 5, $calls );
+    $reasons = array_column( TRP_LLM_Breadcrumb::$entries['trp_llm_chunk_failures'], 'reason' );
+    trp_test_same( array( 'count-mismatch', 'count-mismatch-split' ), $reasons );
+};
+
+$tests['runner: a spent budget stops the isolation pass'] = static function () {
+    $calls = 0;
+    trp_test_same( array(), trp_test_run_chunk( array( 'A', 'B', 'C', 'D' ), static function () use ( &$calls ) {
+        ++$calls;
+        TRP_LLM_Request_Retry::$worthwhile = false;
+
+        return trp_test_response( '["one"]' );
+    } ) );
+
+    trp_test_same( 1, $calls );
 };
 
 $tests['runner: invalid outer JSON is handled without warnings'] = static function () {
