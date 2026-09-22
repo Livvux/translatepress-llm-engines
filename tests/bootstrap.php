@@ -17,8 +17,46 @@ set_error_handler( static function ( $severity, $message, $file, $line ) {
     throw new ErrorException( $message, 0, $severity, $file, $line );
 } );
 
+/**
+ * The smallest filter registry the runner's own extension points need.
+ *
+ * Pass-through was enough while nothing under test read a filter. It is not
+ * enough for a policy a site is meant to be able to turn off, because a default
+ * that has never been overridden in a test is a default nobody has shown to be
+ * overridable.
+ *
+ * tests/reliability.php carries its own copy of this, deliberately: it doubles
+ * WordPress for the real policy classes, this file doubles the collaborators
+ * themselves, and the two harnesses differ in almost every other double they
+ * define. Behaviour here is kept identical to that one so the two suites cannot
+ * disagree about what a filter is.
+ *
+ * @var array<string, array<int, callable>>
+ */
+$GLOBALS['trp_test_filters'] = array();
+
+function add_filter( $name, $callback ) {
+    $GLOBALS['trp_test_filters'][ $name ][] = $callback;
+}
+
+function remove_filter( $name, $callback ) {
+    foreach ( $GLOBALS['trp_test_filters'][ $name ] ?? array() as $index => $registered ) {
+        if ( $registered === $callback ) {
+            unset( $GLOBALS['trp_test_filters'][ $name ][ $index ] );
+        }
+    }
+}
+
 function apply_filters( $name, $value, ...$args ) {
+    foreach ( $GLOBALS['trp_test_filters'][ $name ] ?? array() as $callback ) {
+        $value = $callback( $value, ...$args );
+    }
+
     return $value;
+}
+
+function __return_false() {
+    return false;
 }
 
 function is_wp_error( $value ) {
@@ -63,6 +101,21 @@ class TRP_LLM_Breadcrumb {
 
 class TRP_LLM_Request_Retry {
     public static $worthwhile = true;
+
+    /**
+     * Seconds of render budget left, INF when no render is waiting.
+     *
+     * The default is INF because that is what WP-CLI, cron and the backfill
+     * scripts see, and because a suite whose only budget was "a render is
+     * waiting" could never show what the off-render policy does.
+     *
+     * @var float
+     */
+    public static $budget = INF;
+
+    public static function remaining_budget() {
+        return self::$budget;
+    }
 
     public static function send_is_worthwhile() {
         return self::$worthwhile;
@@ -151,8 +204,10 @@ function trp_test_same( $expected, $actual ) {
 }
 
 function trp_test_reset() {
+    $GLOBALS['trp_test_filters'] = array();
     TRP_LLM_Breadcrumb::$entries = array();
     TRP_LLM_Request_Retry::$worthwhile = true;
+    TRP_LLM_Request_Retry::$budget = INF;
     TRP_LLM_Engine_Cooldown::$reasons = array();
     TRP_LLM_Engine_Cooldown::$noted = array();
     TRP_LLM_Request_Shape::$costs = array();
